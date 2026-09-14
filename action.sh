@@ -16,6 +16,13 @@
 #  You should have received a copy of the GNU General Public License along
 #  with this program; if not, see <https://www.gnu.org/licenses/>.
 
+# Ensure MODPATH is resolved accurately in KernelSU / Magisk / terminal
+MODDIR="${0%/*}"
+if [[ -z "$MODDIR" || "$MODDIR" == "." || "$MODDIR" == "action.sh" ]]; then
+    MODDIR="/data/adb/modules/hyperos-accessibility-fix"
+fi
+MODPATH="${MODPATH:-$MODDIR}"
+
 LOGFILE="/tmp/a11y_watchdog.log"
 PIDFILE="/tmp/a11y_watchdog.pid"
 MODPROP="$MODPATH/module.prop"
@@ -32,37 +39,65 @@ echo "========================================="
 echo " $MODULENAME v$VERSION"
 echo "========================================="
 
+# Pure shell /proc search to avoid awk / pgrep dependencies
+find_pids_by_cmd() {
+    local target="$1"
+    local pids=""
+    for p in /proc/[0-9]*; do
+        if [[ -f "$p/cmdline" ]] && grep -Fq "$target" "$p/cmdline" 2>/dev/null; then
+            local pid="${p#/proc/}"
+            # Exclude current shell process ($$)
+            if [[ "$pid" != "$$" ]]; then
+                pids="${pids}${pid} "
+            fi
+        fi
+    done
+    printf '%s' "${pids% }"
+}
+
 # 1. Check Watchdog Process Status
 WATCHDOG_PID=""
 if [[ -f "$PIDFILE" ]]; then
     read -r WATCHDOG_PID < "$PIDFILE" 2>/dev/null
 fi
 
+# Also check /proc if PIDFILE was missing or stale
+if [[ -z "$WATCHDOG_PID" ]] || ! kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+    WATCHDOG_PID=$(find_pids_by_cmd "a11y_watchdog.sh")
+fi
+
+STATUS_STR=""
 if [[ -n "$WATCHDOG_PID" ]] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
     OOM_SCORE=$(cat "/proc/$WATCHDOG_PID/oom_score_adj" 2>/dev/null || echo "N/A")
-    echo "[+] Watchdog Daemon: RUNNING (PID: $WATCHDOG_PID, oom_score_adj: $OOM_SCORE)"
+    echo "[+] 守护进程 (Watchdog): 正在运行 (PID: $WATCHDOG_PID, oom: $OOM_SCORE)"
+    STATUS_STR="[🟢守护运行中 PID: $WATCHDOG_PID]"
 else
-    echo "[-] Watchdog Daemon: NOT RUNNING"
-    echo "    Attempting to restart watchdog..."
+    echo "[-] 守护进程 (Watchdog): 未在运行"
+    echo "    正在尝试重启守护进程..."
     setsid /system/bin/sh "$SCRIPTDIR/a11y_watchdog.sh" "$MODPATH" "$LOGFILE" > /dev/null 2>&1 < /dev/null &
     sleep 0.5
     if [[ -f "$PIDFILE" ]]; then
         read -r NEW_PID < "$PIDFILE" 2>/dev/null
         if [[ -n "$NEW_PID" ]] && kill -0 "$NEW_PID" 2>/dev/null; then
-            echo "[+] Watchdog successfully restarted (PID: $NEW_PID)"
+            echo "[+] 守护进程已成功恢复运行 (PID: $NEW_PID)"
+            WATCHDOG_PID="$NEW_PID"
+            STATUS_STR="[🟢守护已恢复 PID: $NEW_PID]"
         else
-            echo "[-] Failed to restart watchdog. Check log for details."
+            echo "[-] 重启失败，请检查运行环境或日志。"
+            STATUS_STR="[🔴未运行 重启失败]"
         fi
+    else
+        STATUS_STR="[🔴未运行]"
     fi
 fi
 
-# 2. Check Monitor Status
-MONITOR_PIDS=$(pgrep -f "a11y_watchdog_monitor.sh" 2>/dev/null || ps -ef 2>/dev/null | grep "[a]11y_watchdog_monitor.sh" | awk '{print $2}')
+# 2. Check Monitor Daemon Status
+MONITOR_PIDS=$(find_pids_by_cmd "a11y_watchdog_monitor.sh")
 if [[ -n "$MONITOR_PIDS" ]]; then
-    echo "[+] Monitor Daemon:  RUNNING (PID: $(echo $MONITOR_PIDS | tr '\n' ' '))"
+    echo "[+] 监控进程 (Monitor):  正在运行 (PID: $MONITOR_PIDS)"
 else
-    echo "[-] Monitor Daemon:  NOT RUNNING"
-    echo "    Starting monitor daemon..."
+    echo "[-] 监控进程 (Monitor):  未在运行"
+    echo "    正在拉起监控进程..."
     setsid /system/bin/sh "$SCRIPTDIR/a11y_watchdog_monitor.sh" "$MODPATH" > /dev/null 2>&1 < /dev/null &
 fi
 
@@ -72,7 +107,7 @@ echo "-----------------------------------------"
 ACTION="$1"
 case "$ACTION" in
     sync)
-        echo "[*] Triggering manual watchlist sync from active services..."
+        echo "[*] 触发手动同步：正在将当前系统启用的服务写入白名单..."
         ACTIVE=$(settings get secure enabled_accessibility_services 2>/dev/null)
         if [[ -n "$ACTIVE" && "$ACTIVE" != "null" ]]; then
             out_sync=""
@@ -84,14 +119,14 @@ case "$ACTION" in
                 out_sync="${out_sync}${s}\n"
             done
             printf '%b' "$out_sync" | sort > "$WATCHLIST"
-            echo "[+] Watchlist updated with $(wc -l < "$WATCHLIST") service(s)."
+            echo "[+] 白名单已同步，共 $(wc -l < "$WATCHLIST") 个服务。"
         else
             : > "$WATCHLIST"
-            echo "[*] Watchlist cleared (no active services enabled)."
+            echo "[*] 白名单已清空（当前系统无开启的无障碍服务）。"
         fi
         ;;
     restore)
-        echo "[*] Triggering manual service restoration from watchlist..."
+        echo "[*] 触发手动恢复：正在从白名单恢复无障碍服务..."
         if [[ -s "$WATCHLIST" ]]; then
             rep_list=""
             while IFS= read -r item || [[ -n "$item" ]]; do
@@ -103,24 +138,30 @@ case "$ACTION" in
             if [[ -n "$rep_list" ]]; then
                 settings put secure enabled_accessibility_services "$rep_list"
                 settings put secure accessibility_enabled 1
-                echo "[+] Successfully restored: $rep_list"
+                echo "[+] 恢复成功: $rep_list"
             fi
         else
-            echo "[-] Watchlist is empty, nothing to restore."
+            echo "[-] 白名单为空，无需恢复。"
         fi
         ;;
     clear)
-        echo "[*] Clearing watchlist..."
+        echo "[*] 正在清空白名单..."
         : > "$WATCHLIST"
-        echo "[+] Watchlist cleared."
+        echo "[+] 白名单已清空。"
         ;;
 esac
 
-# 4. Show Current Services & Watchlist
-echo "System Enabled Accessibility Services:"
+# 4. Update module.prop description dynamically so status is visible in Manager list
+if [[ -f "$MODPROP" ]]; then
+    BASE_DESC="防止HyperOS强行关闭无障碍服务 | 点击操作查看状态与日志"
+    sed -i "s|^description=.*|description=$STATUS_STR $BASE_DESC|" "$MODPROP" 2>/dev/null
+fi
+
+# 5. Show Current Services & Watchlist
+echo "系统当前已启用的无障碍服务:"
 SYSTEM_SVCS=$(settings get secure enabled_accessibility_services 2>/dev/null)
 if [[ -z "$SYSTEM_SVCS" || "$SYSTEM_SVCS" == "null" ]]; then
-    echo "  (None)"
+    echo "  (无)"
 else
     for s in ${SYSTEM_SVCS//:/ }; do
         echo "  - $s"
@@ -128,19 +169,19 @@ else
 fi
 
 echo ""
-echo "Watchdog Saved Services (Watchlist):"
+echo "白名单持久化保存的服务 (Watchlist):"
 if [[ -s "$WATCHLIST" ]]; then
     while IFS= read -r w || [[ -n "$w" ]]; do
         w="${w%$'\r'}"
         [[ -n "$w" ]] && echo "  * $w"
     done < "$WATCHLIST"
 else
-    echo "  (Empty)"
+    echo "  (空)"
 fi
 
 if [[ -s "$EXCLUDE_FILE" ]]; then
     echo ""
-    echo "Custom Excluded Services:"
+    echo "自定义排除的服务 (Exclude List):"
     while IFS= read -r e || [[ -n "$e" ]]; do
         e="${e%$'\r'}"
         [[ -n "$e" ]] && echo "  x $e"
@@ -148,12 +189,25 @@ if [[ -s "$EXCLUDE_FILE" ]]; then
 fi
 
 echo "-----------------------------------------"
-echo "Recent Watchdog Logs:"
+echo "最近运行日志 (最新 20 条):"
 if [[ -f "$LOGFILE" ]]; then
-    tail -n 25 "$LOGFILE"
+    tail -n 20 "$LOGFILE"
 else
-    echo "  (No log file found at $LOGFILE)"
+    echo "  (未找到日志文件 $LOGFILE)"
 fi
 echo "========================================="
+
+# 6. Countdown pause so KernelSU dialog remains visible for reading
+if [[ -z "$ACTION" ]]; then
+    echo ""
+    echo "[提示] 窗口将在 10 秒后自动关闭，以便查看报告..."
+    count=10
+    while (( count > 0 )); do
+        printf "\r[*] 剩余停留时间: %2d 秒 (可直接点按外部区域关闭)" "$count"
+        sleep 1
+        (( count-- ))
+    done
+    echo ""
+fi
 
 exit 0
