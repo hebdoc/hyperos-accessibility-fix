@@ -1,3 +1,10 @@
+# 1.0.7
+- Added real-time Binder health check via `dumpsys accessibility` to detect "Fake-ON" (zombie/disconnected) services
+- Added auto-rebind kick mechanism: seamlessly revives services that appear ON in Settings but are dead/unresponsive in the background
+- Added instant health check on device unlock (`android.intent.action.USER_PRESENT`) so services are revived right as the user unlocks the screen
+- Enhanced `action.sh` to display real-time connection status (`[🟢正常通信]` vs `[🔴假死未连接]`) and support one-click manual rebind (`sh action.sh heal`)
+- Dynamically update module description in KernelSU/Magisk manager with live status tags
+
 # 1.0.6
 - Fixed watchdog daemon crash caused by unsupported `--line-buffered` on Toybox grep
 - Fixed issue where disabling all accessibility services in Settings was reverted automatically

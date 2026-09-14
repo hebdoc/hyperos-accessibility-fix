@@ -90,6 +90,13 @@ get_services() {
     printf '%s\n' "${out_str%:}"
 }
 
+get_bound_services() {
+    # Extract bound and binding services from dumpsys accessibility
+    dumpsys accessibility 2>/dev/null | \
+    grep -E "Bound services:{|Binding services:{" | \
+    sed -e 's/.*services:{//' -e 's/}.*//' -e 's/, */ /g'
+}
+
 is_settings_focused() {
     # Check currently focused window or app via dumpsys window displays (lightweight and universal)
     if dumpsys window displays 2>/dev/null | grep -E "mCurrentFocus|mFocusedApp" | grep -qE "com\.android\.settings|com\.miui\.securitycenter"; then
@@ -142,7 +149,6 @@ repair_database() {
 
     if [[ -f "$WATCHLIST" ]]; then
         while IFS= read -r raw_item || [[ -n "$raw_item" ]]; do
-            # Strip trailing carriage return or space
             local svc_item="${raw_item%$'\r'}"
             svc_item=$(normalize_component "$svc_item")
             [[ -z "$svc_item" ]] && continue
@@ -196,26 +202,86 @@ repair_database() {
     fi
 }
 
+check_and_heal_fake_active() {
+    # If user is in settings, do not interfere
+    if is_settings_focused; then
+        return 0
+    fi
+
+    local current_enabled
+    current_enabled=$(get_services)
+    [[ -z "$current_enabled" ]] && return 0
+
+    local bound_raw
+    bound_raw=$(get_bound_services)
+    local bound_normalized=" "
+    for b in $bound_raw; do
+        local nb
+        nb=$(normalize_component "$b")
+        [[ -n "$nb" ]] && bound_normalized="${bound_normalized}${nb} "
+    done
+
+    local healthy_services=""
+    local fake_dead=""
+
+    for raw_svc in ${current_enabled//:/ }; do
+        local svc
+        svc=$(normalize_component "$raw_svc")
+        [[ -z "$svc" ]] && continue
+        if [[ "$bound_normalized" == *" $svc "* ]]; then
+            healthy_services="${healthy_services}${svc}:"
+        else
+            fake_dead="${fake_dead}${svc}:"
+        fi
+    done
+
+    healthy_services="${healthy_services%:}"
+    fake_dead="${fake_dead%:}"
+
+    if [[ -n "$fake_dead" ]]; then
+        log "Fake-ON (zombie) service detected: '$fake_dead' is enabled in settings but not bound!"
+        log "Triggering auto-rebind kick to revive zombie accessibility service(s)..."
+
+        # Briefly toggle to force SettingsProvider change event
+        if [[ -n "$healthy_services" ]]; then
+            settings put secure enabled_accessibility_services "$healthy_services"
+        else
+            settings put secure enabled_accessibility_services ""
+            settings put secure accessibility_enabled 0
+        fi
+
+        sleep 0.25
+
+        # Restore full enabled services and re-enable accessibility master switch
+        settings put secure enabled_accessibility_services "$current_enabled"
+        settings put secure accessibility_enabled 1
+
+        log "Auto-rebind executed successfully for '$current_enabled'"
+    fi
+}
+
 # Startup initialization
 if [[ ! -s "$WATCHLIST" ]]; then
-    # Watchlist is absent or empty: initialize from current live services
     sync_live_to_watchlist
     log "Initialized watchlist with active services"
 else
-    # Watchlist already has saved services: restore any wiped during boot
     repair_database
     log "Verified saved watchlist on startup"
 fi
+
+# Startup health check for fake-on services
+check_and_heal_fake_active
 
 log "Initialized watchdog daemon (PID: $$)"
 
 # Note: Toybox grep does not support (and doesn't need) --line-buffered
 logcat -b events -b main -b system -T 1 | \
-grep -E "accessibility event occurred|Accessibility volume enabled|AccessibilityContentObserver|ActivityManager: Force stopping|ActivityManager: Background started FGS" | \
+grep -E "accessibility event occurred|Accessibility volume enabled|AccessibilityContentObserver|ActivityManager: Force stopping|ActivityManager: Background started FGS|android\.intent\.action\.USER_PRESENT" | \
 while read -r _; do
     if is_settings_focused; then
         sync_live_to_watchlist
     else
         repair_database
+        check_and_heal_fake_active
     fi
 done

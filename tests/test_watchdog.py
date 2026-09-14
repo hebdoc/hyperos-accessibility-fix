@@ -2,7 +2,7 @@
 """
 Comprehensive test suite for hyperos-accessibility-fix logic and components.
 Tests normalization, exclusion, settings focus detection, regex patterns,
-watchlist sync, uninstalled package filtering, and log rotation.
+watchlist sync, uninstalled package filtering, log rotation, and Fake-ON detection.
 """
 
 import os
@@ -22,7 +22,8 @@ class TestWatchdogLogic(unittest.TestCase):
         r"Accessibility volume enabled|"
         r"AccessibilityContentObserver|"
         r"ActivityManager: Force stopping|"
-        r"ActivityManager: Background started FGS"
+        r"ActivityManager: Background started FGS|"
+        r"android\.intent\.action\.USER_PRESENT"
     )
 
     def normalize_component(self, svc_str: str) -> str:
@@ -58,74 +59,86 @@ class TestWatchdogLogic(unittest.TestCase):
                     return True
         return False
 
+    def parse_bound_and_binding_services(self, dumpsys_a11y_output: str) -> set:
+        """Emulate shell parsing:
+        dumpsys accessibility 2>/dev/null | tr '\n' ' '
+        extracting components inside Bound services:{...} and Binding services:{...}
+        """
+        bound = set()
+        for pattern in (r"Bound services:\{([^}]*)\}", r"Binding services:\{([^}]*)\}"):
+            match = re.search(pattern, dumpsys_a11y_output)
+            if match:
+                content = match.group(1).replace("\n", " ").replace(",", " ")
+                for item in content.split():
+                    item = item.strip()
+                    if item:
+                        bound.add(self.normalize_component(item))
+        return bound
+
+    def detect_fake_active_services(self, current_enabled_str: str, bound_set: set) -> tuple:
+        """Detect services that are enabled in settings but not bound or binding."""
+        healthy = []
+        fake_dead = []
+        for raw in current_enabled_str.split(":"):
+            svc = self.normalize_component(raw)
+            if not svc or self.is_excluded(svc):
+                continue
+            if svc in bound_set:
+                healthy.append(svc)
+            else:
+                fake_dead.append(svc)
+        return ":".join(healthy), ":".join(fake_dead)
+
     def test_component_normalization(self):
         """Test normalization of short vs long Android component names."""
-        # Standard shorthand
         self.assertEqual(
             self.normalize_component("com.example.app/.MyService"),
             "com.example.app/com.example.app.MyService"
         )
-        # Deep package shorthand
         self.assertEqual(
             self.normalize_component("com.example.app/.sub.MyService"),
             "com.example.app/com.example.app.sub.MyService"
         )
-        # Already fully qualified
         self.assertEqual(
             self.normalize_component("com.example.app/com.example.app.MyService"),
             "com.example.app/com.example.app.MyService"
         )
-        # Fully qualified with different subpackage
         self.assertEqual(
             self.normalize_component("com.example.app/org.other.MyService"),
             "com.example.app/org.other.MyService"
         )
-        # Empty string
         self.assertEqual(self.normalize_component(""), "")
 
     def test_exclusion_logic(self):
         """Verify that default and custom excluded services are properly identified, even in shorthand."""
-        # Default screenshot service in full form
         self.assertTrue(self.is_excluded("com.miui.screenshot/com.miui.screenshot.accessibility.ScreenshotAccessibilityService"))
-        
-        # Default screenshot service in shorthand form (the bug in previous versions!)
         self.assertTrue(self.is_excluded("com.miui.screenshot/.accessibility.ScreenshotAccessibilityService"))
-
-        # Non-excluded service
         self.assertFalse(self.is_excluded("com.github.user.app/.MyAccessibilityService"))
 
-        # Custom excluded service
         custom = {"com.custom.app/com.custom.app.CustomService"}
         self.assertTrue(self.is_excluded("com.custom.app/.CustomService", custom))
         self.assertFalse(self.is_excluded("com.other.app/.OtherService", custom))
 
     def test_settings_focus_detection(self):
         """Test foreground Settings detection across Android versions and UI variations."""
-        # Android 14 Settings SPA
         spa_dump = "  mCurrentFocus=Window{8b7d903 u0 com.android.settings/com.android.settings.spa.SpaActivity}"
         self.assertTrue(self.is_settings_focused(spa_dump))
 
-        # HyperOS SubSettings
         subsettings_dump = "  mCurrentFocus=Window{3f2a1b0 u0 com.android.settings/com.android.settings.SubSettings}"
         self.assertTrue(self.is_settings_focused(subsettings_dump))
 
-        # HyperOS MainSettings
         main_dump = "  mCurrentFocus=Window{633aa7f u0 com.android.settings/com.android.settings.MainSettings}"
         self.assertTrue(self.is_settings_focused(main_dump))
 
-        # HyperOS AccessibilitySettingsActivity
         a11y_dump = "  mCurrentFocus=Window{1234567 u0 com.android.settings/com.android.settings.Settings$AccessibilitySettingsActivity}"
         self.assertTrue(self.is_settings_focused(a11y_dump))
 
-        # MIUI Security Center
         sec_dump = "  mCurrentFocus=Window{9998887 u0 com.miui.securitycenter/com.miui.securityscan.MainActivity}"
         self.assertTrue(self.is_settings_focused(sec_dump))
 
-        # Non-settings app (e.g. Chrome or Home Launcher)
         launcher_dump = "  mCurrentFocus=Window{4455667 u0 com.miui.home/com.miui.home.launcher.Launcher}"
         self.assertFalse(self.is_settings_focused(launcher_dump))
 
-        # Test mFocusedApp fallback
         focused_app_dump = (
             "  mCurrentFocus=null\n"
             "  mFocusedApp=AppWindowToken{abc1234 token=Token{...} com.android.settings/.SubSettings}"
@@ -133,30 +146,60 @@ class TestWatchdogLogic(unittest.TestCase):
         self.assertTrue(self.is_settings_focused(focused_app_dump))
 
     def test_logcat_event_regex(self):
-        """Test logcat regex matches all critical triggers without false positives."""
+        """Test logcat regex matches all critical triggers including USER_PRESENT."""
         pattern = re.compile(self.LOGCAT_EVENT_REGEX)
 
-        # Triggers
         self.assertTrue(pattern.search("I ActivityManager: Force stopping com.urbandroid.lux appid=10415 user=0: LockScreenClean"))
         self.assertTrue(pattern.search("D AccessibilityContentObserver.onChange: enabled_accessibility_services changed"))
         self.assertTrue(pattern.search("V AccessibilityManagerService: accessibility event occurred in window"))
         self.assertTrue(pattern.search("I AccessibilityManagerService: Accessibility volume enabled"))
         self.assertTrue(pattern.search("I ActivityManager: Background started FGS: ..."))
+        self.assertTrue(pattern.search("I ActivityManager: Sending non-protected broadcast android.intent.action.USER_PRESENT"))
 
-        # Non-triggers
         self.assertFalse(pattern.search("D ActivityManager: proc 1234 died"))
         self.assertFalse(pattern.search("I WindowManager: Relayout Window"))
         self.assertFalse(pattern.search("V SensorService: active connections"))
 
+    def test_parse_bound_services(self):
+        """Test parsing bound and binding services from dumpsys accessibility (single and multi-line)."""
+        dump = (
+            "User state[1]:\n"
+            "  Bound services:{\n"
+            "    com.example.app/.MyService,\n"
+            "    org.autojs.autojs6/org.autojs.autojs6.service.AccessibilityService\n"
+            "  }\n"
+            "  Binding services:{com.pending.app/.InitService}\n"
+            "  Crashed services:{com.crashed.app/.DeadService}\n"
+        )
+        bound = self.parse_bound_and_binding_services(dump)
+        self.assertIn("com.example.app/com.example.app.MyService", bound)
+        self.assertIn("org.autojs.autojs6/org.autojs.autojs6.service.AccessibilityService", bound)
+        self.assertIn("com.pending.app/com.pending.app.InitService", bound)
+        self.assertNotIn("com.crashed.app/com.crashed.app.DeadService", bound)
+
+        # Single-line format (standard AOSP)
+        single_line_dump = "  Bound services:{com.single.app/.Service1, com.single.app/.Service2}"
+        bound_single = self.parse_bound_and_binding_services(single_line_dump)
+        self.assertIn("com.single.app/com.single.app.Service1", bound_single)
+        self.assertIn("com.single.app/com.single.app.Service2", bound_single)
+
+    def test_detect_fake_active_services(self):
+        """Test detection of zombie services that are enabled in settings but disconnected in Binder."""
+        current_enabled = "com.alive.app/.AliveService:com.zombie.app/.ZombieService"
+        bound_set = {"com.alive.app/com.alive.app.AliveService"}
+
+        healthy, fake_dead = self.detect_fake_active_services(current_enabled, bound_set)
+
+        self.assertEqual(healthy, "com.alive.app/com.alive.app.AliveService")
+        self.assertEqual(fake_dead, "com.zombie.app/com.zombie.app.ZombieService")
+
     def test_watchlist_sync_disabling_all_services(self):
         """Verify that when a user disables all services in Settings, watchlist is properly cleared."""
-        # Simulate watchlist file
         with tempfile.TemporaryDirectory() as tmpdir:
             watchlist_file = Path(tmpdir) / "a11y_watchlist.txt"
             watchlist_file.write_text("com.app.one/com.app.one.Service\ncom.app.two/com.app.two.Service\n")
 
-            # Emulate sync_live_to_watchlist with empty live services (user turned off all services in Settings)
-            sync_cur = ""  # get_services returned empty
+            sync_cur = ""
             sync_active = ""
             if sync_cur:
                 for item in sync_cur.split(":"):
@@ -172,7 +215,6 @@ class TestWatchdogLogic(unittest.TestCase):
                 else:
                     watchlist_file.write_text("")
 
-            # Watchlist should now be empty!
             self.assertEqual(watchlist_file.read_text(), "")
 
     def test_repair_database_with_uninstalled_packages(self):
@@ -184,10 +226,9 @@ class TestWatchdogLogic(unittest.TestCase):
                 "com.uninstalled.app/com.uninstalled.app.Service\n"
             )
 
-            # Mock pm path: installed returns True, uninstalled returns False
             installed_packages = {"com.installed.app"}
 
-            rep_cur = ""  # Currently 0 services enabled due to HyperOS wipe
+            rep_cur = ""
             rep_seen = set()
             rep_new_list = []
             cleaned_watchlist = []
@@ -211,20 +252,16 @@ class TestWatchdogLogic(unittest.TestCase):
 
             rep_new = ":".join(rep_new_list)
 
-            # rep_new should only contain the installed app
             self.assertEqual(rep_new, "com.installed.app/com.installed.app.Service")
-            # watchlist should be updated to purge the uninstalled app
             self.assertEqual(watchlist_file.read_text().strip(), "com.installed.app/com.installed.app.Service")
 
     def test_log_rotation(self):
         """Verify log rotation logic properly truncates logs when exceeding limit."""
         with tempfile.TemporaryDirectory() as tmpdir:
             log_file = Path(tmpdir) / "test.log"
-            # Write 200 lines
             lines = [f"Line {i}" for i in range(1, 201)]
             log_file.write_text("\n".join(lines) + "\n")
 
-            # Emulate rotation: if > 150 lines, keep last 80
             file_lines = log_file.read_text().splitlines()
             if len(file_lines) > 150:
                 retained = file_lines[-80:]
