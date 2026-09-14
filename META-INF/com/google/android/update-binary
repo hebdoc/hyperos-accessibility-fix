@@ -17,6 +17,13 @@ require_new_magisk() {
   exit 1
 }
 
+require_new_ksu() {
+  ui_print "**********************************"
+  ui_print " Please install KernelSU v1.0.2+! "
+  ui_print "**********************************"
+  exit 1
+}
+
 #########################
 # Load util_functions.sh
 #########################
@@ -26,9 +33,20 @@ ZIPFILE=$3
 
 mount /data 2>/dev/null
 
-[ -f /data/adb/magisk/util_functions.sh ] || require_new_magisk
-. /data/adb/magisk/util_functions.sh
-[ $MAGISK_VER_CODE -lt 28000 ] && require_new_magisk
+if [ -f /data/adb/magisk/util_functions.sh ]; then
+  . /data/adb/magisk/util_functions.sh
+  [ "$MAGISK_VER_CODE" -lt 28000 ] && require_new_magisk
+elif [ -f /data/adb/ksu/util_functions.sh ]; then
+  . /data/adb/ksu/util_functions.sh
+  [ -n "$KSU_VER_CODE" ] && [ "$KSU_VER_CODE" -lt 11800 ] && require_new_ksu
+elif [ -f /data/adb/ap/util_functions.sh ]; then
+  . /data/adb/ap/util_functions.sh
+else
+  ui_print "********************************************"
+  ui_print " Please install Magisk, KernelSU or APatch! "
+  ui_print "********************************************"
+  exit 1
+fi
 
 install_module
 exit 0
