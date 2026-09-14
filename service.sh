@@ -22,28 +22,29 @@ LOGFILE="/tmp/a11y_watchdog.log"
 MISSING=""
 
 log() {
-    printf "$(date '+%m-%d %H:%M') [service] %s\n" "$1" >> "$LOGFILE"
+    printf "%s [service] %s\n" "$(date '+%m-%d %H:%M:%S')" "$1" >> "$LOGFILE"
 }
 
-# Wait until /data is decrypted
-while [[ "$(getprop sys.boot_completed)" != "1" ]]; 
-    do sleep 5
+# Wait until /data is decrypted and boot is completed
+while [[ "$(getprop sys.boot_completed)" != "1" ]]; do
+    sleep 3
 done
 
-for cmd in grep dumpsys logcat read printf echo sleep sed setsid wc kill cut mv settings; 
-    do command -v "$cmd" >/dev/null 2>&1 || MISSING="$MISSING $cmd"
+for cmd in grep logcat read printf echo sleep sed setsid wc kill cut mv settings pm dumpsys; do
+    command -v "$cmd" >/dev/null 2>&1 || MISSING="$MISSING $cmd"
 done
 
-if [[ ! -f $LOGFILE ]]; 
-    then : >> "$LOGFILE"
+if [[ ! -f "$LOGFILE" ]]; then
+    : >> "$LOGFILE"
 fi
-if [[ -n "$MISSING" ]];
-    then
-        log "- required command(s) missing: $MISSING. please install busybox/toybox."
-        exit 1
+
+if [[ -n "$MISSING" ]]; then
+    log "- required command(s) missing: $MISSING. please install busybox/toybox."
+    exit 1
 fi
-if [[ ! -f $WATCHLIST ]]; 
-    then : >> "$WATCHLIST"
+
+if [[ ! -f "$WATCHLIST" ]]; then
+    : >> "$WATCHLIST"
 fi
 
 setsid /system/bin/sh "$SCRIPTDIR/a11y_watchdog.sh" "$MODPATH" "$LOGFILE" > /dev/null 2>&1 < /dev/null &

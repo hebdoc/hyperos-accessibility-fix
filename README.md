@@ -61,16 +61,23 @@ On my device, these two frameworks cause a range of problems for some reason, so
 
 It's also more minimal this way, having no requirements at all.
 
+## Features & Enhancements
+- **Zero-Crash Logcat Monitoring**: Native support for Toybox and GNU `grep` without reliance on `--line-buffered`.
+- **Intelligent Focus Detection**: Sub-20ms foreground check using `dumpsys window displays`, fully compatible with modern Android 14+ Settings SPA and HyperOS without spawning ART VMs.
+- **Smart Watchlist Sync**: Allows user to freely turn off or on accessibility services in Settings without automatic re-enabling locks.
+- **Auto Package Pruning**: Uninstalled apps are automatically cleaned from watchlist to prevent zombie restoration.
+- **Custom Exclusions**: Place custom services to ignore in `/data/adb/modules/hyperos-accessibility-fix/a11y_exclude.txt`.
+- **Action Button Diagnostic**: Click "Action" in KernelSU/Magisk to view real-time daemon PIDs, OOM adj, active vs watchlist services, and logs.
+
 ## Note
 - When Ultra Battery Saver is turned on, the accessibility services will still keep running in the background
-- Force stopping an app via App Manager will not (permanently) remove it's accessibility permission anymore.
-So be careful at what you enable
+- Force stopping an app via App Manager will not (permanently) remove its accessibility permission anymore.
 
 ## Installation:
 * [Download the module archive here](https://github.com/chkndrp/hyperos-accessibility-fix/releases/latest/download/hyperos-accessibility-fix.zip)
 * Flash it in magisk app, or using command line
 
 ## Requirements
-- HyperOS 1.0+ (or any A14+ system)
-- KernelSU 1.0.2+
-- Magisk 28.0+
+- HyperOS 1.0+ (or any Android 13+ / AOSP system)
+- KernelSU 1.0.2+ or APatch or Magisk 28.0+
+

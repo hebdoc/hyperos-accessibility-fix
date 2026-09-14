@@ -19,7 +19,7 @@
 
 MISSING=""
 
-for cmd in grep dumpsys logcat read printf echo sleep sed setsid wc kill cut mv settings; 
+for cmd in grep dumpsys logcat read printf echo sleep sed setsid wc kill cut mv settings pm; 
     do command -v "$cmd" >/dev/null 2>&1 || MISSING="$MISSING $cmd"
 done
 

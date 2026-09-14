@@ -21,69 +21,98 @@ SCRIPTDIR="$MODPATH/scripts"
 
 PIDFILE="/tmp/a11y_watchdog.pid"
 LOGFILE="/tmp/a11y_watchdog.log"
+LOCKFILE="/tmp/a11y_watchdog.restart.lock"
 
 # Increase OOM score to prevent getting killed by LMKD
-if [[ -f /proc/self/oom_score_adj ]]; 
-    then printf "-900" > /proc/self/oom_score_adj
+if [[ -f /proc/self/oom_score_adj ]]; then
+    printf -- "-900" > /proc/self/oom_score_adj
 fi
 
 log() {
-    if (( $(wc -l < "$LOGFILE") > 100 )); 
-        then sed -i '1,50d' "$LOGFILE"
+    if (( $(wc -l < "$LOGFILE") > 150 )); then
+        tail -n 80 "$LOGFILE" > "$LOGFILE.tmp"
+        mv -f "$LOGFILE.tmp" "$LOGFILE"
     fi
 
-    printf "$(date '+%m-%d %H:%M') [monitor] %s\n" "$1" >> "$LOGFILE"
+    printf "%s [monitor] %s\n" "$(date '+%m-%d %H:%M:%S')" "$1" >> "$LOGFILE"
+}
+
+is_process_alive() {
+    local pid="$1"
+    [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+clean_stale_lock() {
+    if [[ -f "$LOCKFILE" ]]; then
+        local lock_pid=""
+        read -r lock_pid < "$LOCKFILE" 2>/dev/null
+        if ! is_process_alive "$lock_pid"; then
+            rm -f "$LOCKFILE"
+        fi
+    fi
 }
 
 restart_watchdog() {
-    lock_file="/tmp/a11y_watchdog.restart.lock"
-    lock_timeout=50
+    clean_stale_lock
 
-    attempts=0
-    waited=0
-    file_pid=0
+    local waited=0
+    local lock_timeout=30
+    local acquired_lock=0
 
-    while ! (set -o noclobber; printf "%s\n" "$$" > "$lock_file") 2>/dev/null && (( waited < lock_timeout )); 
-        do
-            sleep 0.1
-            (( waited++ ))
+    while (( waited < lock_timeout )); do
+        if (set -o noclobber; printf "%s\n" "$$" > "$LOCKFILE") 2>/dev/null; then
+            acquired_lock=1
+            break
+        fi
+        sleep 0.1
+        (( waited++ ))
     done
 
-    if kill -0 "$PID" 2>/dev/null; 
-        then
-            rm -f "$lock_file"
-            log "Watchdog process ($PID) recovered during lock wait"
-            return 0
+    if (( acquired_lock == 0 )); then
+        clean_stale_lock
+        return 1
     fi
-    
-    log "Restarting watchdog process..."
+
+    # Check if watchdog was already started while waiting
+    local current_pid=""
+    if read -r current_pid < "$PIDFILE" 2>/dev/null && is_process_alive "$current_pid"; then
+        rm -f "$LOCKFILE"
+        log "Watchdog process ($current_pid) is already running"
+        return 0
+    fi
+
+    log "Watchdog dead or missing PID. Restarting watchdog daemon..."
     setsid /system/bin/sh "$SCRIPTDIR/a11y_watchdog.sh" "$MODPATH" "$LOGFILE" > /dev/null 2>&1 < /dev/null &
 
-    while (( attempts < 30 )); 
-        do
-            if read -r file_pid < "$PIDFILE" && kill -0 "$file_pid" 2>/dev/null; 
-                then
-                    rm -f "$lock_file"
-                    log "Watchdog restarted successfully (PID: $file_pid)"
-                    return 0
-            fi
-
-            sleep 0.1
-            (( attempts++ ))
+    local attempts=0
+    local restarted_pid=""
+    while (( attempts < 30 )); do
+        if read -r restarted_pid < "$PIDFILE" 2>/dev/null && is_process_alive "$restarted_pid"; then
+            rm -f "$LOCKFILE"
+            log "Watchdog restarted successfully (PID: $restarted_pid)"
+            return 0
+        fi
+        sleep 0.1
+        (( attempts++ ))
     done
-    
-    rm -f "$lock_file"
-    log "Failed to verify watchdog restart"
+
+    rm -f "$LOCKFILE"
+    log "Failed to verify watchdog restart after 3 seconds"
     return 1
 }
 
-while true; 
-    do
-        sleep 60
+# Immediate check upon startup
+if ! read -r PID < "$PIDFILE" 2>/dev/null || ! is_process_alive "$PID"; then
+    log "Initial check: watchdog process not detected, starting..."
+    restart_watchdog
+fi
 
-        if ! read -r PID < "$PIDFILE" 2>/dev/null || [[ -z $PID ]] || ! kill -0 "$PID" 2>/dev/null; 
-            then
-                log "Watchdog process dead or PID missing, restarting watchdog"
-                restart_watchdog
-        fi
+# Main monitoring loop
+while true; do
+    sleep 25
+
+    if ! read -r PID < "$PIDFILE" 2>/dev/null || ! is_process_alive "$PID"; then
+        log "Watchdog process dead or PID missing, restarting watchdog"
+        restart_watchdog
+    fi
 done

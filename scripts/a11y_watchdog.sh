@@ -16,133 +16,206 @@
 #  You should have received a copy of the GNU General Public License along
 #  with this program; if not, see <https://www.gnu.org/licenses/>.
 
-WATCHLIST="$1/a11y_watchlist.txt"
-PIDFILE="/tmp/a11y_watchdog.pid"
+MODPATH="$1"
 LOGFILE="$2"
+WATCHLIST="$MODPATH/a11y_watchlist.txt"
+EXCLUDE_FILE="$MODPATH/a11y_exclude.txt"
+PIDFILE="/tmp/a11y_watchdog.pid"
 
 # This service is managed automatically by HyperOS on some devices
-EXCLUDE_SVC="com.miui.screenshot/com.miui.screenshot.accessibility.ScreenshotAccessibilityService"
+DEFAULT_EXCLUDE_SVC="com.miui.screenshot/com.miui.screenshot.accessibility.ScreenshotAccessibilityService"
 
 # Write PID to file for monitoring
-printf "%d\n" $$ > "$PIDFILE.tmp" && mv -f "$PIDFILE.tmp" "$PIDFILE" || exit 1
+printf "%d\n" "$$" > "$PIDFILE.tmp" && mv -f "$PIDFILE.tmp" "$PIDFILE" || exit 1
 
 # Increase OOM score to prevent getting killed by LMKD
-if [[ -f /proc/self/oom_score_adj ]]; 
-    then printf "-800" > /proc/self/oom_score_adj
+if [[ -f /proc/self/oom_score_adj ]]; then
+    printf -- "-800" > /proc/self/oom_score_adj
 fi
 
 log() {
-    if (( $(wc -l < "$LOGFILE") > 100 )); 
-        then
-            tail -n 50 "$LOGFILE" > "$LOGFILE.tmp" 
-            mv -f "$LOGFILE.tmp" "$LOGFILE"
+    if (( $(wc -l < "$LOGFILE") > 150 )); then
+        tail -n 80 "$LOGFILE" > "$LOGFILE.tmp"
+        mv -f "$LOGFILE.tmp" "$LOGFILE"
     fi
 
-    printf "$(date '+%m-%d %H:%M') [watchdog] %s\n" "$1" >> "$LOGFILE"
+    printf "%s [watchdog] %s\n" "$(date '+%m-%d %H:%M:%S')" "$1" >> "$LOGFILE"
+}
+
+normalize_component() {
+    local svc="$1"
+    if [[ "$svc" == */.* ]]; then
+        local pkg="${svc%%/*}"
+        svc="$pkg/$pkg${svc#*/}"
+    fi
+    printf '%s\n' "$svc"
+}
+
+is_excluded() {
+    local svc="$1"
+    [[ "$svc" == "$DEFAULT_EXCLUDE_SVC" ]] && return 0
+    if [[ -f "$EXCLUDE_FILE" ]]; then
+        grep -Fqx "$svc" "$EXCLUDE_FILE" 2>/dev/null && return 0
+    fi
+    return 1
+}
+
+is_package_installed() {
+    local pkg="$1"
+    pm path "$pkg" >/dev/null 2>&1
 }
 
 get_services() {
-    unset out_str
+    local out_str=""
+    local get_svc_out
     get_svc_out=$(settings get secure enabled_accessibility_services 2>/dev/null)
 
-    if [[ -z "$get_svc_out" || "$get_svc_out" == "null" ]];
-        then return
+    if [[ -z "$get_svc_out" || "$get_svc_out" == "null" ]]; then
+        return
     fi
 
-    for svc_str in ${get_svc_out//:/ };
-        do
-            if [[ -z "$svc_str" || "$svc_str" == "$EXCLUDE_SVC" ]];
-                then continue
-            fi
+    for raw_svc in ${get_svc_out//:/ }; do
+        [[ -z "$raw_svc" ]] && continue
+        local svc_str
+        svc_str=$(normalize_component "$raw_svc")
+        [[ -z "$svc_str" ]] && continue
 
-            if [[ "$svc_str" == */.* ]];
-                then
-                    package="${svc_str%%/*}"
-                    svc_str="$package/$package${svc_str#*/}"
-            fi
+        if is_excluded "$svc_str"; then
+            continue
+        fi
 
-            out_str="${out_str}${svc_str}:"
+        out_str="${out_str}${svc_str}:"
     done
 
-    printf '%s\n' "${out_str%?}"
+    printf '%s\n' "${out_str%:}"
 }
 
-repair_database() {
-    sleep 0.2
-
-    rep_cur=$(get_services)
-    rep_seen=""
-    rep_new=""
-
-    if [[ -f "$WATCHLIST" ]]; 
-        then
-            while read -r svc_item; 
-                do
-                    if [[ -z "$svc_item" || "$rep_seen" == *":$svc_item:"* || "$svc_item" == "$EXCLUDE_SVC" ]];
-                        then continue
-                    fi
-
-                    rep_new="${rep_new}${svc_item}:"
-                    rep_seen="$rep_seen:$svc_item:"
-            done < "$WATCHLIST"
+is_settings_focused() {
+    # Check currently focused window or app via dumpsys window displays (lightweight and universal)
+    if dumpsys window displays 2>/dev/null | grep -E "mCurrentFocus|mFocusedApp" | grep -qE "com\.android\.settings|com\.miui\.securitycenter"; then
+        return 0
     fi
-
-    for svc_item in ${rep_cur//:/ }; 
-        do
-            if [[ -z "$svc_item" || "$rep_seen" == *":$svc_item:"* || "$svc_item" == "$EXCLUDE_SVC" ]];
-                then continue
-            fi
-
-            rep_new="${rep_new}${svc_item}:"
-            rep_seen="$rep_seen:$svc_item:"
-    done
-
-    rep_new="${rep_new%?}"
-
-    if [[ "$rep_new" != "$rep_cur" && -n "$rep_new" ]];
-        then
-            log "Wipe detected! Restored '$rep_new'"
-
-            settings put secure enabled_accessibility_services "$rep_new"
-            settings put secure accessibility_enabled 1
+    # Fallback to dumpsys activity resumed check
+    if dumpsys activity activities 2>/dev/null | grep -E "mResumedActivity|topResumedActivity" | grep -qE "com\.android\.settings|com\.miui\.securitycenter"; then
+        return 0
     fi
+    return 1
 }
 
 sync_live_to_watchlist() {
+    local sync_cur sync_active item
     sync_cur=$(get_services)
     sync_active=""
 
-    if [[ -z "$sync_cur" ]];
-        then return
-    fi
-
-    for item in ${sync_cur//:/ }; 
-        do
-            if [[ "$item" == *"/"* ]]; 
-                then sync_active="${sync_active}${item}\n"
+    if [[ -n "$sync_cur" ]]; then
+        for item in ${sync_cur//:/ }; do
+            if [[ "$item" == *"/"* ]]; then
+                sync_active="${sync_active}${item}\n"
             fi
-    done
-
-    if [[ -z "$sync_active" ]];
-        then return
+        done
     fi
 
-    if [[ "$(cat "$WATCHLIST" 2>/dev/null)" != "$(printf "%b" "$sync_active" | sort)" ]];
-        then
-            printf '%b' "$sync_active" | sort > "$WATCHLIST"
+    local current_watchlist=""
+    [[ -f "$WATCHLIST" ]] && current_watchlist=$(cat "$WATCHLIST" 2>/dev/null)
+
+    local new_watchlist=""
+    [[ -n "$sync_active" ]] && new_watchlist=$(printf '%b' "$sync_active" | sort)
+
+    if [[ "$current_watchlist" != "$new_watchlist" ]]; then
+        if [[ -n "$new_watchlist" ]]; then
+            printf '%s\n' "$new_watchlist" > "$WATCHLIST"
             log "Watchlist synced with manual user changes: '$sync_cur'"
+        else
+            : > "$WATCHLIST"
+            log "Watchlist cleared (all accessibility services disabled by user in settings)"
+        fi
     fi
 }
 
-sync_live_to_watchlist
-log "Initialized watchdog daemon"
+repair_database() {
+    local rep_cur rep_seen rep_new cleaned_watchlist watchlist_modified
+    rep_cur=$(get_services)
+    rep_seen=""
+    rep_new=""
+    cleaned_watchlist=""
+    watchlist_modified=0
 
-logcat -b events -b main -b system -T 1 | \
-grep --line-buffered -E "accessibility event occurred|Accessibility volume enabled|AccessibilityContentObserver.onChange|ActivityManager: Background started FGS" | \
-while read -r _; 
-    do
-        if am stack list | grep -qE "visible=true.*SubSettings";
-            then sync_live_to_watchlist
-            else repair_database
+    if [[ -f "$WATCHLIST" ]]; then
+        while IFS= read -r raw_item || [[ -n "$raw_item" ]]; do
+            # Strip trailing carriage return or space
+            local svc_item="${raw_item%$'\r'}"
+            svc_item=$(normalize_component "$svc_item")
+            [[ -z "$svc_item" ]] && continue
+            if is_excluded "$svc_item"; then
+                continue
+            fi
+
+            # Check if package is still installed
+            local pkg="${svc_item%%/*}"
+            if [[ -n "$pkg" ]] && ! is_package_installed "$pkg"; then
+                log "Package '$pkg' is uninstalled. Removing from watchlist."
+                watchlist_modified=1
+                continue
+            fi
+
+            cleaned_watchlist="${cleaned_watchlist}${svc_item}\n"
+
+            if [[ "$rep_seen" != *":$svc_item:"* ]]; then
+                rep_new="${rep_new}${svc_item}:"
+                rep_seen="$rep_seen:$svc_item:"
+            fi
+        done < "$WATCHLIST"
+    fi
+
+    # Prune uninstalled packages from watchlist file if any found
+    if (( watchlist_modified == 1 )); then
+        if [[ -n "$cleaned_watchlist" ]]; then
+            printf '%b' "$cleaned_watchlist" | sort > "$WATCHLIST"
+        else
+            : > "$WATCHLIST"
         fi
+    fi
+
+    # Merge any currently enabled services
+    for svc_item in ${rep_cur//:/ }; do
+        svc_item=$(normalize_component "$svc_item")
+        if [[ -z "$svc_item" || "$rep_seen" == *":$svc_item:"* ]] || is_excluded "$svc_item"; then
+            continue
+        fi
+
+        rep_new="${rep_new}${svc_item}:"
+        rep_seen="$rep_seen:$svc_item:"
+    done
+
+    rep_new="${rep_new%:}"
+
+    if [[ "$rep_new" != "$rep_cur" && -n "$rep_new" ]]; then
+        log "Wipe detected! Restored accessibility services: '$rep_new'"
+        settings put secure enabled_accessibility_services "$rep_new"
+        settings put secure accessibility_enabled 1
+    fi
+}
+
+# Startup initialization
+if [[ ! -s "$WATCHLIST" ]]; then
+    # Watchlist is absent or empty: initialize from current live services
+    sync_live_to_watchlist
+    log "Initialized watchlist with active services"
+else
+    # Watchlist already has saved services: restore any wiped during boot
+    repair_database
+    log "Verified saved watchlist on startup"
+fi
+
+log "Initialized watchdog daemon (PID: $$)"
+
+# Note: Toybox grep does not support (and doesn't need) --line-buffered
+logcat -b events -b main -b system -T 1 | \
+grep -E "accessibility event occurred|Accessibility volume enabled|AccessibilityContentObserver|ActivityManager: Force stopping|ActivityManager: Background started FGS" | \
+while read -r _; do
+    if is_settings_focused; then
+        sync_live_to_watchlist
+    else
+        repair_database
+    fi
 done
