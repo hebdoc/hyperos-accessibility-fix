@@ -65,7 +65,7 @@ EOF
     # Filter out current script PID ($$)
     local filtered=""
     for p in $pids; do
-        if [[ "$p" =~ ^[0-9]+$ && "$p" != "$$" ]]; then
+        if [ -n "$p" ] && [ "$p" != "$$" ] && [ "$p" -eq "$p" ] 2>/dev/null; then
             filtered="${filtered}${p} "
         fi
     done
@@ -74,9 +74,9 @@ EOF
 
 get_system_services() {
     local svcs=""
-    svcs=$(settings get --user 0 secure enabled_accessibility_services 2>/dev/null)
+    svcs=$(settings get --user 0 secure enabled_accessibility_services 2>/dev/null | tr -d '\r')
     if [[ -z "$svcs" || "$svcs" == "null" ]]; then
-        svcs=$(settings get secure enabled_accessibility_services 2>/dev/null)
+        svcs=$(settings get secure enabled_accessibility_services 2>/dev/null | tr -d '\r')
     fi
     if [[ -z "$svcs" || "$svcs" == "null" ]]; then
         svcs=$(dumpsys accessibility 2>/dev/null | grep -E "Enabled services:\{" | sed -e 's/.*services:{//' -e 's/}.*//' -e 's/, */:/g' | tr -d ' ')
@@ -183,7 +183,7 @@ ACTION="$1"
 case "$ACTION" in
     sync)
         echo "[*] 触发手动同步：正在将当前系统启用的服务写入白名单..."
-        ACTIVE=$(settings get secure enabled_accessibility_services 2>/dev/null)
+        ACTIVE=$(settings get secure enabled_accessibility_services 2>/dev/null | tr -d '\r')
         if [[ -n "$ACTIVE" && "$ACTIVE" != "null" ]]; then
             out_sync=""
             for s in ${ACTIVE//:/ }; do
@@ -221,7 +221,7 @@ case "$ACTION" in
         ;;
     heal)
         echo "[*] 触发无障碍服务重连与复活..."
-        CURR_SVCS=$(settings get secure enabled_accessibility_services 2>/dev/null)
+        CURR_SVCS=$(settings get secure enabled_accessibility_services 2>/dev/null | tr -d '\r')
         if [[ -n "$CURR_SVCS" && "$CURR_SVCS" != "null" ]]; then
             settings put secure enabled_accessibility_services ""
             settings put secure accessibility_enabled 0

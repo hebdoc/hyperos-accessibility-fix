@@ -104,7 +104,7 @@ is_package_running() {
 get_services() {
     local out_str=""
     local get_svc_out
-    get_svc_out=$(settings get secure enabled_accessibility_services 2>/dev/null)
+    get_svc_out=$(settings get secure enabled_accessibility_services 2>/dev/null | tr -d '\r')
 
     if [[ -z "$get_svc_out" || "$get_svc_out" == "null" ]]; then
         return
