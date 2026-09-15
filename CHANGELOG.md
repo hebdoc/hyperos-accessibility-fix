@@ -1,3 +1,10 @@
+# 1.0.9
+- Fixed KernelSU Action screen hang/freeze caused by looping over `/proc/[0-9]*` for process inspection
+- Replaced slow and potentially blocking `/proc` cmdline directory iteration with instant, non-blocking `ps` and `pgrep` checks
+- Added dedicated PID file tracking for `a11y_watchdog_monitor.sh` (`/tmp/a11y_watchdog_monitor.pid`)
+- Upgraded Action diagnostics to show dual-source status (system settings + watchlist) with live process PID for every tracked app
+- Added automatic live module sync during flashing so updated action screen works immediately without rebooting
+
 # 1.0.8
 - Fixed infinite rebind loop causing apps like "李跳跳" (Li Tiaotiao) to prompt "后台频繁被杀"
 - Replaced fragile dumpsys accessibility parsing with robust process liveness detection (`pidof` & `/proc/[pid]/cmdline`)

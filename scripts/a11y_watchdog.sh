@@ -85,8 +85,16 @@ is_package_running() {
         return 0
     fi
 
-    # 2. Direct /proc cmdline inspection in a single fast pass (zero external dependencies)
-    if grep -Fq "$pkg" /proc/[0-9]*/cmdline 2>/dev/null; then
+    # 2. pgrep check
+    if pgrep -f "^${pkg}" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # 3. Universal ps check (fast, non-blocking, zero risk of hanging)
+    if ps -A 2>/dev/null | grep -Fq "$pkg"; then
+        return 0
+    fi
+    if ps 2>/dev/null | grep -Fq "$pkg"; then
         return 0
     fi
 

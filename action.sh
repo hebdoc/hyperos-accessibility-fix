@@ -33,7 +33,7 @@ SCRIPTDIR="$MODPATH/scripts"
 MODULENAME=$(grep '^name=' "$MODPROP" 2>/dev/null | cut -d'=' -f2)
 VERSION=$(grep '^version=' "$MODPROP" 2>/dev/null | cut -d'=' -f2)
 [[ -z "$MODULENAME" ]] && MODULENAME="HyperOS accessibility fix"
-[[ -z "$VERSION" ]] && VERSION="1.0.8"
+[[ -z "$VERSION" ]] && VERSION="1.0.9"
 
 echo "========================================="
 echo " $MODULENAME v$VERSION"
@@ -42,19 +42,34 @@ echo "========================================="
 # Ensure PATH contains standard Android system binaries
 export PATH="/data/adb/ap/bin:/data/adb/ksu/bin:/data/adb/magisk:$PATH:/system/bin:/system/xbin:/vendor/bin:/apex/com.android.runtime/bin"
 
-# Pure shell /proc search to avoid awk / pgrep dependencies
+# Fast and safe PID finder using pure shell and standard ps (never hangs on /proc)
 find_pids_by_cmd() {
     local target="$1"
     local pids=""
-    for p in /proc/[0-9]*; do
-        if [[ -f "$p/cmdline" ]] && grep -Fq "$target" "$p/cmdline" 2>/dev/null; then
-            local pid="${p#/proc/}"
-            if [[ "$pid" != "$$" ]]; then
+
+    # 1. pgrep (instant in C)
+    pids=$(pgrep -f "$target" 2>/dev/null | tr '\n' ' ')
+
+    # 2. ps -A with pure shell line reading (works without awk)
+    if [[ -z "$pids" ]]; then
+        local line u pid rest
+        while read -r u pid rest; do
+            if [[ "$rest" == *"$target"* ]]; then
                 pids="${pids}${pid} "
             fi
+        done <<EOF
+$(ps -A 2>/dev/null || ps 2>/dev/null)
+EOF
+    fi
+
+    # Filter out current script PID ($$)
+    local filtered=""
+    for p in $pids; do
+        if [[ "$p" =~ ^[0-9]+$ && "$p" != "$$" ]]; then
+            filtered="${filtered}${p} "
         fi
     done
-    printf '%s' "${pids% }"
+    printf '%s' "${filtered% }"
 }
 
 get_system_services() {
@@ -75,24 +90,24 @@ get_package_pids() {
     [[ -z "$pkg" ]] && return
     local pids=""
 
+    # 1. pidof (fastest)
     pids=$(pidof "$pkg" 2>/dev/null)
 
+    # 2. pgrep
     if [[ -z "$pids" ]]; then
         pids=$(pgrep -f "^${pkg}" 2>/dev/null | tr '\n' ' ')
     fi
 
+    # 3. ps -A pure shell line reading
     if [[ -z "$pids" ]]; then
-        pids=$(ps -A 2>/dev/null | grep -F "$pkg" | awk '{print $2}' | tr '\n' ' ')
-        [[ -z "$pids" ]] && pids=$(ps 2>/dev/null | grep -F "$pkg" | awk '{print $2}' | tr '\n' ' ')
-    fi
-
-    if [[ -z "$pids" ]]; then
-        for p in /proc/[0-9]*; do
-            if [[ -f "$p/cmdline" ]] && grep -Fq "$pkg" "$p/cmdline" 2>/dev/null; then
-                local pid="${p#/proc/}"
+        local line u pid rest
+        while read -r u pid rest; do
+            if [[ "$rest" == *"$pkg"* ]]; then
                 pids="${pids}${pid} "
             fi
-        done
+        done <<EOF
+$(ps -A 2>/dev/null || ps 2>/dev/null)
+EOF
     fi
 
     printf '%s' "${pids% }"
@@ -141,9 +156,20 @@ else
 fi
 
 # 2. Check Monitor Daemon Status
-MONITOR_PIDS=$(find_pids_by_cmd "a11y_watchdog_monitor.sh")
-if [[ -n "$MONITOR_PIDS" ]]; then
-    echo "[+] 监控进程 (Monitor):  正在运行 (PID: $MONITOR_PIDS)"
+MONITOR_PIDFILE="/tmp/a11y_watchdog_monitor.pid"
+MONITOR_PID=""
+if [[ -f "$MONITOR_PIDFILE" ]]; then
+    read -r MONITOR_PID < "$MONITOR_PIDFILE" 2>/dev/null
+    if ! kill -0 "$MONITOR_PID" 2>/dev/null; then
+        MONITOR_PID=""
+    fi
+fi
+if [[ -z "$MONITOR_PID" ]]; then
+    MONITOR_PID=$(find_pids_by_cmd "a11y_watchdog_monitor.sh")
+fi
+
+if [[ -n "$MONITOR_PID" ]]; then
+    echo "[+] 监控进程 (Monitor):  正在运行 (PID: $MONITOR_PID)"
 else
     echo "[-] 监控进程 (Monitor):  未在运行"
     echo "    正在拉起监控进程..."

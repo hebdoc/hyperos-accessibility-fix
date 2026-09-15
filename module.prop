@@ -1,7 +1,7 @@
 id=hyperos-accessibility-fix
 name=HyperOS accessibility fix
-version=1.0.8
-versionCode=108
+version=1.0.9
+versionCode=109
 author=chkndrp
 description=Stop HyperOS from killing accessibility & keep background services alive safely | Click Action for diagnostics
 updateJson=https://raw.githubusercontent.com/chkndrp/hyperos-accessibility-fix/main/update.json

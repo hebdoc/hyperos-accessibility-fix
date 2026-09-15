@@ -20,8 +20,12 @@ MODPATH="$1"
 SCRIPTDIR="$MODPATH/scripts"
 
 PIDFILE="/tmp/a11y_watchdog.pid"
+MONITOR_PIDFILE="/tmp/a11y_watchdog_monitor.pid"
 LOGFILE="/tmp/a11y_watchdog.log"
 LOCKFILE="/tmp/a11y_watchdog.restart.lock"
+
+# Write PID to file for instant, non-blocking monitoring
+printf "%d\n" "$$" > "$MONITOR_PIDFILE.tmp" && mv -f "$MONITOR_PIDFILE.tmp" "$MONITOR_PIDFILE" || exit 1
 
 # Increase OOM score to prevent getting killed by LMKD
 if [[ -f /proc/self/oom_score_adj ]]; then
