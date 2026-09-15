@@ -33,7 +33,7 @@ SCRIPTDIR="$MODPATH/scripts"
 MODULENAME=$(grep '^name=' "$MODPROP" 2>/dev/null | cut -d'=' -f2)
 VERSION=$(grep '^version=' "$MODPROP" 2>/dev/null | cut -d'=' -f2)
 [[ -z "$MODULENAME" ]] && MODULENAME="HyperOS accessibility fix"
-[[ -z "$VERSION" ]] && VERSION="1.1.1"
+[[ -z "$VERSION" ]] && VERSION="1.1.2"
 
 echo "========================================="
 echo " $MODULENAME v$VERSION"
