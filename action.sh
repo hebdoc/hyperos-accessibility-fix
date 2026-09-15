@@ -33,7 +33,7 @@ SCRIPTDIR="$MODPATH/scripts"
 MODULENAME=$(grep '^name=' "$MODPROP" 2>/dev/null | cut -d'=' -f2)
 VERSION=$(grep '^version=' "$MODPROP" 2>/dev/null | cut -d'=' -f2)
 [[ -z "$MODULENAME" ]] && MODULENAME="HyperOS accessibility fix"
-[[ -z "$VERSION" ]] && VERSION="1.0.7"
+[[ -z "$VERSION" ]] && VERSION="1.0.8"
 
 echo "========================================="
 echo " $MODULENAME v$VERSION"
@@ -52,6 +52,23 @@ find_pids_by_cmd() {
         fi
     done
     printf '%s' "${pids% }"
+}
+
+is_package_running() {
+    local pkg="$1"
+    [[ -z "$pkg" ]] && return 1
+
+    if pidof "$pkg" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    for cmd in /proc/[0-9]*/cmdline; do
+        if grep -Fq "$pkg" "$cmd" 2>/dev/null; then
+            return 0
+        fi
+    done
+
+    return 1
 }
 
 # 1. Check Watchdog Process Status
@@ -143,15 +160,15 @@ case "$ACTION" in
         fi
         ;;
     heal)
-        echo "[*] 触发假死重连与复活..."
+        echo "[*] 触发无障碍服务重连与复活..."
         CURR_SVCS=$(settings get secure enabled_accessibility_services 2>/dev/null)
         if [[ -n "$CURR_SVCS" && "$CURR_SVCS" != "null" ]]; then
             settings put secure enabled_accessibility_services ""
             settings put secure accessibility_enabled 0
-            sleep 0.25
+            sleep 0.3
             settings put secure enabled_accessibility_services "$CURR_SVCS"
             settings put secure accessibility_enabled 1
-            echo "[+] 已强制触发系统底层 Binder 重建！"
+            echo "[+] 已触发系统底层重新连接！"
         else
             echo "[-] 当前系统无开启的无障碍服务。"
         fi
@@ -163,55 +180,47 @@ case "$ACTION" in
         ;;
 esac
 
-# 4. Check Bound Services & Fake-ON (Zombie) Status
-echo "系统当前无障碍服务真实运行状态:"
+# 4. Check Process Status for Enabled Services
+echo "系统当前无障碍服务及后台进程状态:"
 SYSTEM_SVCS=$(settings get secure enabled_accessibility_services 2>/dev/null)
-has_fake_dead=0
+has_dead=0
 
 if [[ -z "$SYSTEM_SVCS" || "$SYSTEM_SVCS" == "null" ]]; then
     echo "  (无已开启服务)"
 else
-    BOUND_RAW=$(dumpsys accessibility 2>/dev/null | grep -E "Bound services:{|Binding services:{" | sed -e 's/.*services:{//' -e 's/}.*//' -e 's/, */ /g')
-    BOUND_NORM=" "
-    for b in $BOUND_RAW; do
-        if [[ "$b" == */.* ]]; then
-            pkg="${b%%/*}"
-            b="$pkg/$pkg${b#*/}"
-        fi
-        [[ -n "$b" ]] && BOUND_NORM="${BOUND_NORM}${b} "
-    done
-
     for s in ${SYSTEM_SVCS//:/ }; do
         norm_s="$s"
         if [[ "$norm_s" == */.* ]]; then
             pkg="${norm_s%%/*}"
             norm_s="$pkg/$pkg${norm_s#*/}"
-        fi
-        if [[ "$BOUND_NORM" == *" $norm_s "* ]]; then
-            echo "  - $s [🟢正常通信]"
         else
-            echo "  - $s [🔴假死未连接 - 自动踢醒复活中]"
-            has_fake_dead=1
+            pkg="${norm_s%%/*}"
+        fi
+
+        if is_package_running "$pkg"; then
+            echo "  - $s [🟢后台进程活跃中]"
+        else
+            echo "  - $s [🔴后台进程已死亡 - 自动执行踢醒复活]"
+            has_dead=1
         fi
     done
 
-    # If any service is fake-dead, trigger instant rebind kick!
-    if (( has_fake_dead == 1 )); then
+    # If an enabled service's process is truly dead, trigger rebind kick
+    if (( has_dead == 1 )); then
         echo ""
-        echo "[*] 检测到底层 Binder 脱节，正在执行无感重连复活..."
+        echo "[*] 检测到有服务进程死亡，正在下发唤醒重连指令..."
         settings put secure enabled_accessibility_services ""
         settings put secure accessibility_enabled 0
-        sleep 0.25
+        sleep 0.3
         settings put secure enabled_accessibility_services "$SYSTEM_SVCS"
         settings put secure accessibility_enabled 1
-        echo "[+] 重连指令已下发，底层通道已触发重建！"
-        STATUS_STR="[⚡已复活假死服务 PID: $WATCHDOG_PID]"
+        echo "[+] 唤醒指令已下发！"
     fi
 fi
 
 # 5. Update module.prop description dynamically so status is visible in Manager list
 if [[ -f "$MODPROP" ]]; then
-    BASE_DESC="防HyperOS强关与假死脱节 | 点击操作查看状态与日志"
+    BASE_DESC="防HyperOS强关与后台被杀 | 点击操作查看状态与日志"
     sed -i "s|^description=.*|description=$STATUS_STR $BASE_DESC|" "$MODPROP" 2>/dev/null
 fi
 

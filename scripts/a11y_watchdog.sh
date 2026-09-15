@@ -25,6 +25,11 @@ PIDFILE="/tmp/a11y_watchdog.pid"
 # This service is managed automatically by HyperOS on some devices
 DEFAULT_EXCLUDE_SVC="com.miui.screenshot/com.miui.screenshot.accessibility.ScreenshotAccessibilityService"
 
+# State tracking for cooldown and loop prevention
+LAST_HEAL_TIME=0
+HEAL_COOLDOWN=60
+SELF_TRIGGER_UNTIL=0
+
 # Write PID to file for monitoring
 printf "%d\n" "$$" > "$PIDFILE.tmp" && mv -f "$PIDFILE.tmp" "$PIDFILE" || exit 1
 
@@ -65,6 +70,25 @@ is_package_installed() {
     pm path "$pkg" >/dev/null 2>&1
 }
 
+is_package_running() {
+    local pkg="$1"
+    [[ -z "$pkg" ]] && return 1
+
+    # 1. pidof check (fastest)
+    if pidof "$pkg" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # 2. Direct /proc cmdline inspection (zero external dependencies)
+    for cmd in /proc/[0-9]*/cmdline; do
+        if grep -Fq "$pkg" "$cmd" 2>/dev/null; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 get_services() {
     local out_str=""
     local get_svc_out
@@ -88,13 +112,6 @@ get_services() {
     done
 
     printf '%s\n' "${out_str%:}"
-}
-
-get_bound_services() {
-    # Extract bound and binding services from dumpsys accessibility
-    dumpsys accessibility 2>/dev/null | \
-    grep -E "Bound services:{|Binding services:{" | \
-    sed -e 's/.*services:{//' -e 's/}.*//' -e 's/, */ /g'
 }
 
 is_settings_focused() {
@@ -197,14 +214,27 @@ repair_database() {
 
     if [[ "$rep_new" != "$rep_cur" && -n "$rep_new" ]]; then
         log "Wipe detected! Restored accessibility services: '$rep_new'"
+        SELF_TRIGGER_UNTIL=$(( $(date +%s) + 2 ))
         settings put secure enabled_accessibility_services "$rep_new"
         settings put secure accessibility_enabled 1
     fi
 }
 
 check_and_heal_fake_active() {
-    # If user is in settings, do not interfere
+    # 1. Do not interfere if user is in settings
     if is_settings_focused; then
+        return 0
+    fi
+
+    # 2. Strict cooldown: do not heal more than once every 60 seconds
+    local now
+    now=$(date +%s)
+    if (( now - LAST_HEAL_TIME < HEAL_COOLDOWN )); then
+        return 0
+    fi
+
+    # 3. Do not run if we recently triggered a settings change ourselves
+    if (( now < SELF_TRIGGER_UNTIL )); then
         return 0
     fi
 
@@ -212,37 +242,33 @@ check_and_heal_fake_active() {
     current_enabled=$(get_services)
     [[ -z "$current_enabled" ]] && return 0
 
-    local bound_raw
-    bound_raw=$(get_bound_services)
-    local bound_normalized=" "
-    for b in $bound_raw; do
-        local nb
-        nb=$(normalize_component "$b")
-        [[ -n "$nb" ]] && bound_normalized="${bound_normalized}${nb} "
-    done
-
+    local dead_services=""
     local healthy_services=""
-    local fake_dead=""
 
     for raw_svc in ${current_enabled//:/ }; do
         local svc
         svc=$(normalize_component "$raw_svc")
         [[ -z "$svc" ]] && continue
-        if [[ "$bound_normalized" == *" $svc "* ]]; then
+
+        local pkg="${svc%%/*}"
+        # If the app's process is running, IT IS NOT DEAD! Never disrupt running apps!
+        if is_package_running "$pkg"; then
             healthy_services="${healthy_services}${svc}:"
         else
-            fake_dead="${fake_dead}${svc}:"
+            dead_services="${dead_services}${svc}:"
         fi
     done
 
     healthy_services="${healthy_services%:}"
-    fake_dead="${fake_dead%:}"
+    dead_services="${dead_services%:}"
 
-    if [[ -n "$fake_dead" ]]; then
-        log "Fake-ON (zombie) service detected: '$fake_dead' is enabled in settings but not bound!"
-        log "Triggering auto-rebind kick to revive zombie accessibility service(s)..."
+    # Only perform recovery if an enabled service's process is ACTUALLY DEAD
+    if [[ -n "$dead_services" ]]; then
+        LAST_HEAL_TIME="$now"
+        SELF_TRIGGER_UNTIL=$(( now + 3 ))
+        log "Zombie process detected for: '$dead_services' (process died but setting remained enabled)"
+        log "Triggering auto-rebind to revive dead service..."
 
-        # Briefly toggle to force SettingsProvider change event
         if [[ -n "$healthy_services" ]]; then
             settings put secure enabled_accessibility_services "$healthy_services"
         else
@@ -250,9 +276,8 @@ check_and_heal_fake_active() {
             settings put secure accessibility_enabled 0
         fi
 
-        sleep 0.25
+        sleep 0.3
 
-        # Restore full enabled services and re-enable accessibility master switch
         settings put secure enabled_accessibility_services "$current_enabled"
         settings put secure accessibility_enabled 1
 
@@ -269,7 +294,7 @@ else
     log "Verified saved watchlist on startup"
 fi
 
-# Startup health check for fake-on services
+# Initial check for dead processes on startup
 check_and_heal_fake_active
 
 log "Initialized watchdog daemon (PID: $$)"
@@ -277,11 +302,20 @@ log "Initialized watchdog daemon (PID: $$)"
 # Note: Toybox grep does not support (and doesn't need) --line-buffered
 logcat -b events -b main -b system -T 1 | \
 grep -E "accessibility event occurred|Accessibility volume enabled|AccessibilityContentObserver|ActivityManager: Force stopping|ActivityManager: Background started FGS|android\.intent\.action\.USER_PRESENT" | \
-while read -r _; do
+while read -r log_line; do
+    # Skip processing if event was triggered by our own recent settings update
+    now=$(date +%s)
+    if (( now < SELF_TRIGGER_UNTIL )); then
+        continue
+    fi
+
     if is_settings_focused; then
         sync_live_to_watchlist
     else
         repair_database
-        check_and_heal_fake_active
+        # Only check fake-dead processes when screen unlocks or on specific force-stop events
+        if [[ "$log_line" == *"USER_PRESENT"* || "$log_line" == *"Force stopping"* ]]; then
+            check_and_heal_fake_active
+        fi
     fi
 done

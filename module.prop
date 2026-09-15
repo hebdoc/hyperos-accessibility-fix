@@ -1,7 +1,7 @@
 id=hyperos-accessibility-fix
 name=HyperOS accessibility fix
-version=1.0.7
-versionCode=107
+version=1.0.8
+versionCode=108
 author=chkndrp
-description=Stop HyperOS from disabling accessibility & auto-revive fake-on zombie services | Click Action for diagnostics
+description=Stop HyperOS from killing accessibility & keep background services alive safely | Click Action for diagnostics
 updateJson=https://raw.githubusercontent.com/chkndrp/hyperos-accessibility-fix/main/update.json

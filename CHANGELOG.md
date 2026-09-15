@@ -1,3 +1,11 @@
+# 1.0.8
+- Fixed infinite rebind loop causing apps like "李跳跳" (Li Tiaotiao) to prompt "后台频繁被杀"
+- Replaced fragile dumpsys accessibility parsing with robust process liveness detection (`pidof` & `/proc/[pid]/cmdline`)
+- Added `SELF_TRIGGER_UNTIL` suppression window to avoid watchdog self-reinforcing rebind loops
+- Added 60-second recovery cooldown (`HEAL_COOLDOWN=60`) to prevent rapid consecutive kicking
+- Gated recovery checks strictly to screen unlock (`USER_PRESENT`) and system force-stop events, eliminating excessive background wakeups and saving battery
+- Updated `action.sh` diagnostics to accurately reflect real-time background process status
+
 # 1.0.7
 - Added real-time Binder health check via `dumpsys accessibility` to detect "Fake-ON" (zombie/disconnected) services
 - Added auto-rebind kick mechanism: seamlessly revives services that appear ON in Settings but are dead/unresponsive in the background

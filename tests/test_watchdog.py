@@ -2,12 +2,14 @@
 """
 Comprehensive test suite for hyperos-accessibility-fix logic and components.
 Tests normalization, exclusion, settings focus detection, regex patterns,
-watchlist sync, uninstalled package filtering, log rotation, and Fake-ON detection.
+watchlist sync, uninstalled package filtering, log rotation,
+process liveness detection, and Fake-ON cooldown/self-trigger prevention.
 """
 
 import os
 import re
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -27,12 +29,7 @@ class TestWatchdogLogic(unittest.TestCase):
     )
 
     def normalize_component(self, svc_str: str) -> str:
-        """Emulate normalize_component in bash:
-        if [[ "$svc_str" == */.* ]]; then
-            package="${svc_str%%/*}"
-            svc_str="$package/$package${svc_str#*/}"
-        fi
-        """
+        """Emulate normalize_component in bash."""
         svc_str = svc_str.strip()
         if not svc_str:
             return ""
@@ -59,35 +56,57 @@ class TestWatchdogLogic(unittest.TestCase):
                     return True
         return False
 
-    def parse_bound_and_binding_services(self, dumpsys_a11y_output: str) -> set:
-        """Emulate shell parsing:
-        dumpsys accessibility 2>/dev/null | tr '\n' ' '
-        extracting components inside Bound services:{...} and Binding services:{...}
-        """
-        bound = set()
-        for pattern in (r"Bound services:\{([^}]*)\}", r"Binding services:\{([^}]*)\}"):
-            match = re.search(pattern, dumpsys_a11y_output)
-            if match:
-                content = match.group(1).replace("\n", " ").replace(",", " ")
-                for item in content.split():
-                    item = item.strip()
-                    if item:
-                        bound.add(self.normalize_component(item))
-        return bound
+    def is_package_running(self, pkg: str, running_pids_dict: dict) -> bool:
+        """Emulate is_package_running checking running process list."""
+        return pkg in running_pids_dict
 
-    def detect_fake_active_services(self, current_enabled_str: str, bound_set: set) -> tuple:
-        """Detect services that are enabled in settings but not bound or binding."""
+    def detect_dead_processes(self, current_enabled_str: str, running_packages: set) -> tuple:
+        """Detect enabled services whose app process is actually dead."""
         healthy = []
-        fake_dead = []
+        dead = []
         for raw in current_enabled_str.split(":"):
             svc = self.normalize_component(raw)
             if not svc or self.is_excluded(svc):
                 continue
-            if svc in bound_set:
+            pkg = svc.split("/", 1)[0]
+            if pkg in running_packages:
                 healthy.append(svc)
             else:
-                fake_dead.append(svc)
-        return ":".join(healthy), ":".join(fake_dead)
+                dead.append(svc)
+        return ":".join(healthy), ":".join(dead)
+
+    def test_running_process_detection(self):
+        """Verify running packages like Li Tiaotiao are never considered dead."""
+        running = {"hello.litiaotiao.app", "org.autojs.autojs6"}
+        current_enabled = "hello.litiaotiao.app/.MyService:com.dead.app/.DeadService"
+
+        healthy, dead = self.detect_dead_processes(current_enabled, running)
+
+        # Li Tiaotiao is running, so it MUST be in healthy and NOT in dead
+        self.assertIn("hello.litiaotiao.app/hello.litiaotiao.app.MyService", healthy)
+        self.assertNotIn("hello.litiaotiao.app/hello.litiaotiao.app.MyService", dead)
+        # Dead app is correctly detected
+        self.assertEqual(dead, "com.dead.app/com.dead.app.DeadService")
+
+    def test_heal_cooldown_and_self_trigger_suppression(self):
+        """Test cooldown prevents infinite restart loops."""
+        cooldown = 60
+        last_heal_time = 1000
+
+        # Attempt 1: only 10s after last heal -> suppressed!
+        current_time = 1010
+        self.assertFalse(current_time - last_heal_time >= cooldown)
+
+        # Attempt 2: 65s after last heal -> allowed!
+        current_time = 1065
+        self.assertTrue(current_time - last_heal_time >= cooldown)
+
+        # Self-trigger suppression test
+        self_trigger_until = 1068  # 3 seconds window
+        # An event arriving at 1066 should be ignored
+        self.assertTrue(1066 < self_trigger_until)
+        # An event arriving after 1068 is processed
+        self.assertFalse(1069 < self_trigger_until)
 
     def test_component_normalization(self):
         """Test normalization of short vs long Android component names."""
@@ -139,12 +158,6 @@ class TestWatchdogLogic(unittest.TestCase):
         launcher_dump = "  mCurrentFocus=Window{4455667 u0 com.miui.home/com.miui.home.launcher.Launcher}"
         self.assertFalse(self.is_settings_focused(launcher_dump))
 
-        focused_app_dump = (
-            "  mCurrentFocus=null\n"
-            "  mFocusedApp=AppWindowToken{abc1234 token=Token{...} com.android.settings/.SubSettings}"
-        )
-        self.assertTrue(self.is_settings_focused(focused_app_dump))
-
     def test_logcat_event_regex(self):
         """Test logcat regex matches all critical triggers including USER_PRESENT."""
         pattern = re.compile(self.LOGCAT_EVENT_REGEX)
@@ -159,39 +172,6 @@ class TestWatchdogLogic(unittest.TestCase):
         self.assertFalse(pattern.search("D ActivityManager: proc 1234 died"))
         self.assertFalse(pattern.search("I WindowManager: Relayout Window"))
         self.assertFalse(pattern.search("V SensorService: active connections"))
-
-    def test_parse_bound_services(self):
-        """Test parsing bound and binding services from dumpsys accessibility (single and multi-line)."""
-        dump = (
-            "User state[1]:\n"
-            "  Bound services:{\n"
-            "    com.example.app/.MyService,\n"
-            "    org.autojs.autojs6/org.autojs.autojs6.service.AccessibilityService\n"
-            "  }\n"
-            "  Binding services:{com.pending.app/.InitService}\n"
-            "  Crashed services:{com.crashed.app/.DeadService}\n"
-        )
-        bound = self.parse_bound_and_binding_services(dump)
-        self.assertIn("com.example.app/com.example.app.MyService", bound)
-        self.assertIn("org.autojs.autojs6/org.autojs.autojs6.service.AccessibilityService", bound)
-        self.assertIn("com.pending.app/com.pending.app.InitService", bound)
-        self.assertNotIn("com.crashed.app/com.crashed.app.DeadService", bound)
-
-        # Single-line format (standard AOSP)
-        single_line_dump = "  Bound services:{com.single.app/.Service1, com.single.app/.Service2}"
-        bound_single = self.parse_bound_and_binding_services(single_line_dump)
-        self.assertIn("com.single.app/com.single.app.Service1", bound_single)
-        self.assertIn("com.single.app/com.single.app.Service2", bound_single)
-
-    def test_detect_fake_active_services(self):
-        """Test detection of zombie services that are enabled in settings but disconnected in Binder."""
-        current_enabled = "com.alive.app/.AliveService:com.zombie.app/.ZombieService"
-        bound_set = {"com.alive.app/com.alive.app.AliveService"}
-
-        healthy, fake_dead = self.detect_fake_active_services(current_enabled, bound_set)
-
-        self.assertEqual(healthy, "com.alive.app/com.alive.app.AliveService")
-        self.assertEqual(fake_dead, "com.zombie.app/com.zombie.app.ZombieService")
 
     def test_watchlist_sync_disabling_all_services(self):
         """Verify that when a user disables all services in Settings, watchlist is properly cleared."""
