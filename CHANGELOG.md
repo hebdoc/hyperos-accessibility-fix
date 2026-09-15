@@ -1,3 +1,8 @@
+# 1.1.0
+- Fixed ash/sh subshell syntax error in `action.sh` that caused immediate exit/dismissal in KernelSU
+- Increased Action diagnostics countdown pause from 10s to 15s for relaxed viewing
+- Verified all shell scripts compile with zero syntax errors via ash parser
+
 # 1.0.9
 - Fixed KernelSU Action screen hang/freeze caused by looping over `/proc/[0-9]*` for process inspection
 - Replaced slow and potentially blocking `/proc` cmdline directory iteration with instant, non-blocking `ps` and `pgrep` checks

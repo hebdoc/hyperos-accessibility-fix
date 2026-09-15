@@ -33,7 +33,7 @@ SCRIPTDIR="$MODPATH/scripts"
 MODULENAME=$(grep '^name=' "$MODPROP" 2>/dev/null | cut -d'=' -f2)
 VERSION=$(grep '^version=' "$MODPROP" 2>/dev/null | cut -d'=' -f2)
 [[ -z "$MODULENAME" ]] && MODULENAME="HyperOS accessibility fix"
-[[ -z "$VERSION" ]] && VERSION="1.0.9"
+[[ -z "$VERSION" ]] && VERSION="1.1.0"
 
 echo "========================================="
 echo " $MODULENAME v$VERSION"
@@ -298,7 +298,14 @@ else
         echo "      组件: $svc"
 
         # Check in system settings
-        if [[ ":$SYSTEM_SVCS:" == *":$svc:"* || ":$SYSTEM_SVCS:" == *":${svc##*/}:"* || ( -n "$SYSTEM_SVCS" && "$SYSTEM_SVCS" == *"$pkg"* ) ]]; then
+        in_settings=0
+        if [[ ":$SYSTEM_SVCS:" == *":$svc:"* || ":$SYSTEM_SVCS:" == *":${svc##*/}:"* ]]; then
+            in_settings=1
+        elif [[ -n "$SYSTEM_SVCS" && "$SYSTEM_SVCS" == *"$pkg"* ]]; then
+            in_settings=1
+        fi
+
+        if [[ "$in_settings" -eq 1 ]]; then
             echo "      系统开关: [🟢已在系统开启]"
         else
             echo "      系统开关: [🔴系统设置未开启或被强关 - 正在触发恢复]"
@@ -384,10 +391,10 @@ echo "========================================="
 # 6. Countdown pause so KernelSU dialog remains visible for reading
 if [[ -z "$ACTION" ]]; then
     echo ""
-    echo "[提示] 窗口将在 10 秒后自动关闭，以便查看报告..."
-    count=10
+    echo "[提示] 报告已完整输出完毕，窗口将在 15 秒后自动关闭..."
+    count=15
     while (( count > 0 )); do
-        printf "\r[*] 剩余停留时间: %2d 秒 (可直接点按外部区域关闭)" "$count"
+        printf "\r[*] 剩余阅读停留时间: %2d 秒 (可随时点击弹窗外部空白处关闭) " "$count"
         sleep 1
         (( count-- ))
     done
