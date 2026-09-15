@@ -46,6 +46,10 @@ REPLACE="
 
 set_permissions() {
   set_perm_recursive "$MODPATH/scripts" 0 0 0700 0700
+  if [ -d "/data/adb/modules/hyperos-accessibility-fix" ]; then
+    cp -f "$MODPATH/action.sh" "/data/adb/modules/hyperos-accessibility-fix/action.sh" 2>/dev/null
+    chmod 755 "/data/adb/modules/hyperos-accessibility-fix/action.sh" 2>/dev/null
+  fi
 }
 
 ##########################################################################################

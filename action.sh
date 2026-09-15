@@ -39,6 +39,9 @@ echo "========================================="
 echo " $MODULENAME v$VERSION"
 echo "========================================="
 
+# Ensure PATH contains standard Android system binaries
+export PATH="/data/adb/ap/bin:/data/adb/ksu/bin:/data/adb/magisk:$PATH:/system/bin:/system/xbin:/vendor/bin:/apex/com.android.runtime/bin"
+
 # Pure shell /proc search to avoid awk / pgrep dependencies
 find_pids_by_cmd() {
     local target="$1"
@@ -54,19 +57,52 @@ find_pids_by_cmd() {
     printf '%s' "${pids% }"
 }
 
+get_system_services() {
+    local svcs=""
+    svcs=$(settings get --user 0 secure enabled_accessibility_services 2>/dev/null)
+    if [[ -z "$svcs" || "$svcs" == "null" ]]; then
+        svcs=$(settings get secure enabled_accessibility_services 2>/dev/null)
+    fi
+    if [[ -z "$svcs" || "$svcs" == "null" ]]; then
+        svcs=$(dumpsys accessibility 2>/dev/null | grep -E "Enabled services:\{" | sed -e 's/.*services:{//' -e 's/}.*//' -e 's/, */:/g' | tr -d ' ')
+    fi
+    [[ "$svcs" == "null" ]] && svcs=""
+    printf '%s' "$svcs"
+}
+
+get_package_pids() {
+    local pkg="$1"
+    [[ -z "$pkg" ]] && return
+    local pids=""
+
+    pids=$(pidof "$pkg" 2>/dev/null)
+
+    if [[ -z "$pids" ]]; then
+        pids=$(pgrep -f "^${pkg}" 2>/dev/null | tr '\n' ' ')
+    fi
+
+    if [[ -z "$pids" ]]; then
+        pids=$(ps -A 2>/dev/null | grep -F "$pkg" | awk '{print $2}' | tr '\n' ' ')
+        [[ -z "$pids" ]] && pids=$(ps 2>/dev/null | grep -F "$pkg" | awk '{print $2}' | tr '\n' ' ')
+    fi
+
+    if [[ -z "$pids" ]]; then
+        for p in /proc/[0-9]*; do
+            if [[ -f "$p/cmdline" ]] && grep -Fq "$pkg" "$p/cmdline" 2>/dev/null; then
+                local pid="${p#/proc/}"
+                pids="${pids}${pid} "
+            fi
+        done
+    fi
+
+    printf '%s' "${pids% }"
+}
+
 is_package_running() {
     local pkg="$1"
-    [[ -z "$pkg" ]] && return 1
-
-    if pidof "$pkg" >/dev/null 2>&1; then
-        return 0
-    fi
-
-    if grep -Fq "$pkg" /proc/[0-9]*/cmdline 2>/dev/null; then
-        return 0
-    fi
-
-    return 1
+    local pids
+    pids=$(get_package_pids "$pkg")
+    [[ -n "$pids" ]]
 }
 
 # 1. Check Watchdog Process Status
@@ -178,41 +214,109 @@ case "$ACTION" in
         ;;
 esac
 
-# 4. Check Process Status for Enabled Services
-echo "系统当前无障碍服务及后台进程状态:"
-SYSTEM_SVCS=$(settings get secure enabled_accessibility_services 2>/dev/null)
-has_dead=0
+# 4. Check Process Status for Enabled & Guarded Services
+echo "🛡️ 无障碍服务守护与实时运行状态:"
 
-if [[ -z "$SYSTEM_SVCS" || "$SYSTEM_SVCS" == "null" ]]; then
-    echo "  (无已开启服务)"
-else
+SYSTEM_SVCS=$(get_system_services)
+
+# Build a unified list of unique services from both system settings and watchlist
+ALL_TRACKED=""
+SEEN_SVCS=""
+
+# Add from system settings
+if [[ -n "$SYSTEM_SVCS" ]]; then
     for s in ${SYSTEM_SVCS//:/ }; do
         norm_s="$s"
         if [[ "$norm_s" == */.* ]]; then
             pkg="${norm_s%%/*}"
             norm_s="$pkg/$pkg${norm_s#*/}"
-        else
-            pkg="${norm_s%%/*}"
         fi
-
-        if is_package_running "$pkg"; then
-            echo "  - $s [🟢后台进程活跃中]"
-        else
-            echo "  - $s [🔴后台进程已死亡 - 自动执行踢醒复活]"
-            has_dead=1
+        if [[ "$SEEN_SVCS" != *":$norm_s:"* ]]; then
+            ALL_TRACKED="${ALL_TRACKED}${norm_s} "
+            SEEN_SVCS="${SEEN_SVCS}:$norm_s:"
         fi
     done
+fi
 
-    # If an enabled service's process is truly dead, trigger rebind kick
-    if (( has_dead == 1 )); then
+# Add from watchlist file
+if [[ -s "$WATCHLIST" ]]; then
+    while IFS= read -r w || [[ -n "$w" ]]; do
+        w="${w%$'\r'}"
+        [[ -z "$w" ]] && continue
+        norm_w="$w"
+        if [[ "$norm_w" == */.* ]]; then
+            pkg="${norm_w%%/*}"
+            norm_w="$pkg/$pkg${norm_w#*/}"
+        fi
+        if [[ "$SEEN_SVCS" != *":$norm_w:"* ]]; then
+            ALL_TRACKED="${ALL_TRACKED}${norm_w} "
+            SEEN_SVCS="${SEEN_SVCS}:$norm_w:"
+        fi
+    done < "$WATCHLIST"
+fi
+
+has_dead=0
+has_unlinked=0
+
+if [[ -z "$ALL_TRACKED" ]]; then
+    echo "  (暂未检测到任何开启或受守护的无障碍服务)"
+    echo "  [提示] 请先在手机【设置 -> 无障碍】中开启需要的服务（如李跳跳）。"
+    echo "         开启后，本模块会自动将其锁定加入白名单并开启实时守护！"
+else
+    idx=1
+    for svc in $ALL_TRACKED; do
+        pkg="${svc%%/*}"
+        pids=$(get_package_pids "$pkg")
+
+        echo "  [$idx] 应用: $pkg"
+        echo "      组件: $svc"
+
+        # Check in system settings
+        if [[ ":$SYSTEM_SVCS:" == *":$svc:"* || ":$SYSTEM_SVCS:" == *":${svc##*/}:"* || ( -n "$SYSTEM_SVCS" && "$SYSTEM_SVCS" == *"$pkg"* ) ]]; then
+            echo "      系统开关: [🟢已在系统开启]"
+        else
+            echo "      系统开关: [🔴系统设置未开启或被强关 - 正在触发恢复]"
+            has_unlinked=1
+        fi
+
+        # Check in watchlist
+        if [[ -s "$WATCHLIST" ]] && grep -Fq "$pkg" "$WATCHLIST" 2>/dev/null; then
+            echo "      守护名单: [🛡️白名单受守护]"
+        else
+            echo "      守护名单: [⚠️未在白名单 (可在设置中重新开关以同步)]"
+        fi
+
+        # Check process liveness
+        if [[ -n "$pids" ]]; then
+            echo "      后台进程: [🟢活跃运行中 (PID: $pids)]"
+        else
+            echo "      后台进程: [🔴进程已死亡 - 正在执行唤醒重连]"
+            has_dead=1
+        fi
         echo ""
-        echo "[*] 检测到有服务进程死亡，正在下发唤醒重连指令..."
-        settings put secure enabled_accessibility_services ""
-        settings put secure accessibility_enabled 0
-        sleep 0.3
-        settings put secure enabled_accessibility_services "$SYSTEM_SVCS"
-        settings put secure accessibility_enabled 1
-        echo "[+] 唤醒指令已下发！"
+        (( idx++ ))
+    done
+
+    # If any service is dead or unlinked from settings, trigger healing kick
+    if (( has_dead == 1 || has_unlinked == 1 )); then
+        echo "[*] 检测到有服务掉线或进程死亡，正在下发系统唤醒与重连指令..."
+        if [[ -s "$WATCHLIST" ]]; then
+            rep_list=""
+            while IFS= read -r item || [[ -n "$item" ]]; do
+                item="${item%$'\r'}"
+                [[ -z "$item" ]] && continue
+                rep_list="${rep_list}${item}:"
+            done < "$WATCHLIST"
+            rep_list="${rep_list%:}"
+            if [[ -n "$rep_list" ]]; then
+                settings put secure enabled_accessibility_services ""
+                settings put secure accessibility_enabled 0
+                sleep 0.3
+                settings put secure enabled_accessibility_services "$rep_list"
+                settings put secure accessibility_enabled 1
+                echo "[+] 已从白名单成功恢复并唤醒全部无障碍服务！"
+            fi
+        fi
     fi
 fi
 

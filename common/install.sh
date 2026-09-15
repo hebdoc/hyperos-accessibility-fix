@@ -28,3 +28,9 @@ if [ -n "$MISSING" ];
         echo "- required command(s) missing: $MISSING. please install busybox/toybox." >&2
         exit 1
 fi
+
+# If module directory already exists, update action.sh immediately so user can click action without rebooting
+if [ -d "/data/adb/modules/hyperos-accessibility-fix" ]; then
+    cp -f "$MODPATH/action.sh" "/data/adb/modules/hyperos-accessibility-fix/action.sh" 2>/dev/null
+    chmod 755 "/data/adb/modules/hyperos-accessibility-fix/action.sh" 2>/dev/null
+fi
