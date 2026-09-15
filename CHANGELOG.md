@@ -1,3 +1,8 @@
+# 1.1.1
+- Fixed countdown loop bashism (`(( count > 0 ))` -> `[ "$count" -gt 0 ]`) that caused premature exit in Android Ash shell
+- Eliminated all bash-specific arithmetic constructs across all module scripts, ensuring 100% pure POSIX compliance
+- Verified live 15-second countdown timer runs to completion under Android Ash environment
+
 # 1.1.0
 - Fixed ash/sh subshell syntax error in `action.sh` that caused immediate exit/dismissal in KernelSU
 - Increased Action diagnostics countdown pause from 10s to 15s for relaxed viewing

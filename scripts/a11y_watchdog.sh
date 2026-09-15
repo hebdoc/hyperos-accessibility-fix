@@ -39,7 +39,7 @@ if [[ -f /proc/self/oom_score_adj ]]; then
 fi
 
 log() {
-    if (( $(wc -l < "$LOGFILE") > 150 )); then
+    if [ "$(wc -l < "$LOGFILE")" -gt 150 ]; then
         tail -n 80 "$LOGFILE" > "$LOGFILE.tmp"
         mv -f "$LOGFILE.tmp" "$LOGFILE"
     fi
@@ -203,7 +203,7 @@ repair_database() {
     fi
 
     # Prune uninstalled packages from watchlist file if any found
-    if (( watchlist_modified == 1 )); then
+    if [ "$watchlist_modified" -eq 1 ]; then
         if [[ -n "$cleaned_watchlist" ]]; then
             printf '%b' "$cleaned_watchlist" | sort > "$WATCHLIST"
         else
@@ -241,12 +241,12 @@ check_and_heal_fake_active() {
     # 2. Strict cooldown: do not heal more than once every 60 seconds
     local now
     now=$(date +%s)
-    if (( now - LAST_HEAL_TIME < HEAL_COOLDOWN )); then
+    if [ $(( now - LAST_HEAL_TIME )) -lt "$HEAL_COOLDOWN" ]; then
         return 0
     fi
 
     # 3. Do not run if we recently triggered a settings change ourselves
-    if (( now < SELF_TRIGGER_UNTIL )); then
+    if [ "$now" -lt "$SELF_TRIGGER_UNTIL" ]; then
         return 0
     fi
 
@@ -317,7 +317,7 @@ grep -E "accessibility event occurred|Accessibility volume enabled|Accessibility
 while read -r log_line; do
     # Skip processing if event was triggered by our own recent settings update
     now=$(date +%s)
-    if (( now < SELF_TRIGGER_UNTIL )); then
+    if [ "$now" -lt "$SELF_TRIGGER_UNTIL" ]; then
         continue
     fi
 

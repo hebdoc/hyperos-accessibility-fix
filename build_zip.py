@@ -33,7 +33,7 @@ TEXT_EXTENSIONS = {".sh", ".prop", ".md", ".json", ".txt"}
 
 
 def build_package():
-    output_name = "hyperos-accessibility-fix-v1.1.0.zip"
+    output_name = "hyperos-accessibility-fix-v1.1.1.zip"
     output_path = BASE_DIR / output_name
 
     print(f"[*] Building module zip: {output_path}")

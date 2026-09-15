@@ -33,7 +33,7 @@ SCRIPTDIR="$MODPATH/scripts"
 MODULENAME=$(grep '^name=' "$MODPROP" 2>/dev/null | cut -d'=' -f2)
 VERSION=$(grep '^version=' "$MODPROP" 2>/dev/null | cut -d'=' -f2)
 [[ -z "$MODULENAME" ]] && MODULENAME="HyperOS accessibility fix"
-[[ -z "$VERSION" ]] && VERSION="1.1.0"
+[[ -z "$VERSION" ]] && VERSION="1.1.1"
 
 echo "========================================="
 echo " $MODULENAME v$VERSION"
@@ -327,11 +327,11 @@ else
             has_dead=1
         fi
         echo ""
-        (( idx++ ))
+        idx=$(( idx + 1 ))
     done
 
     # If any service is dead or unlinked from settings, trigger healing kick
-    if (( has_dead == 1 || has_unlinked == 1 )); then
+    if [ "$has_dead" -eq 1 ] || [ "$has_unlinked" -eq 1 ]; then
         echo "[*] 检测到有服务掉线或进程死亡，正在下发系统唤醒与重连指令..."
         if [[ -s "$WATCHLIST" ]]; then
             rep_list=""
@@ -389,14 +389,14 @@ fi
 echo "========================================="
 
 # 6. Countdown pause so KernelSU dialog remains visible for reading
-if [[ -z "$ACTION" ]]; then
+if [ -z "$ACTION" ]; then
     echo ""
     echo "[提示] 报告已完整输出完毕，窗口将在 15 秒后自动关闭..."
     count=15
-    while (( count > 0 )); do
+    while [ "$count" -gt 0 ]; do
         printf "\r[*] 剩余阅读停留时间: %2d 秒 (可随时点击弹窗外部空白处关闭) " "$count"
         sleep 1
-        (( count-- ))
+        count=$(( count - 1 ))
     done
     echo ""
 fi

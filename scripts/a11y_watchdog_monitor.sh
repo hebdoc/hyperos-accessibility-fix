@@ -33,7 +33,7 @@ if [[ -f /proc/self/oom_score_adj ]]; then
 fi
 
 log() {
-    if (( $(wc -l < "$LOGFILE") > 150 )); then
+    if [ "$(wc -l < "$LOGFILE")" -gt 150 ]; then
         tail -n 80 "$LOGFILE" > "$LOGFILE.tmp"
         mv -f "$LOGFILE.tmp" "$LOGFILE"
     fi
@@ -63,16 +63,16 @@ restart_watchdog() {
     local lock_timeout=30
     local acquired_lock=0
 
-    while (( waited < lock_timeout )); do
+    while [ "$waited" -lt "$lock_timeout" ]; do
         if (set -o noclobber; printf "%s\n" "$$" > "$LOCKFILE") 2>/dev/null; then
             acquired_lock=1
             break
         fi
         sleep 0.1
-        (( waited++ ))
+        waited=$(( waited + 1 ))
     done
 
-    if (( acquired_lock == 0 )); then
+    if [ "$acquired_lock" -eq 0 ]; then
         clean_stale_lock
         return 1
     fi
@@ -90,14 +90,14 @@ restart_watchdog() {
 
     local attempts=0
     local restarted_pid=""
-    while (( attempts < 30 )); do
+    while [ "$attempts" -lt 30 ]; do
         if read -r restarted_pid < "$PIDFILE" 2>/dev/null && is_process_alive "$restarted_pid"; then
             rm -f "$LOCKFILE"
             log "Watchdog restarted successfully (PID: $restarted_pid)"
             return 0
         fi
         sleep 0.1
-        (( attempts++ ))
+        attempts=$(( attempts + 1 ))
     done
 
     rm -f "$LOCKFILE"
