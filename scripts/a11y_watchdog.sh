@@ -67,6 +67,12 @@ is_excluded() {
 
 is_package_installed() {
     local pkg="$1"
+    [[ -z "$pkg" ]] && return 1
+    if pm path "$pkg" >/dev/null 2>&1; then
+        return 0
+    fi
+    # If pm path fails, retry once after a short delay to prevent false pruning during in-place APK updates
+    sleep 1
     pm path "$pkg" >/dev/null 2>&1
 }
 
@@ -79,12 +85,10 @@ is_package_running() {
         return 0
     fi
 
-    # 2. Direct /proc cmdline inspection (zero external dependencies)
-    for cmd in /proc/[0-9]*/cmdline; do
-        if grep -Fq "$pkg" "$cmd" 2>/dev/null; then
-            return 0
-        fi
-    done
+    # 2. Direct /proc cmdline inspection in a single fast pass (zero external dependencies)
+    if grep -Fq "$pkg" /proc/[0-9]*/cmdline 2>/dev/null; then
+        return 0
+    fi
 
     return 1
 }

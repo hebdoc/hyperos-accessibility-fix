@@ -62,11 +62,9 @@ is_package_running() {
         return 0
     fi
 
-    for cmd in /proc/[0-9]*/cmdline; do
-        if grep -Fq "$pkg" "$cmd" 2>/dev/null; then
-            return 0
-        fi
-    done
+    if grep -Fq "$pkg" /proc/[0-9]*/cmdline 2>/dev/null; then
+        return 0
+    fi
 
     return 1
 }

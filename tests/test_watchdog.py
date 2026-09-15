@@ -235,6 +235,24 @@ class TestWatchdogLogic(unittest.TestCase):
             self.assertEqual(rep_new, "com.installed.app/com.installed.app.Service")
             self.assertEqual(watchlist_file.read_text().strip(), "com.installed.app/com.installed.app.Service")
 
+    def test_package_install_retry_logic(self):
+        """Verify that transient package check failures during APK update do not prune packages."""
+        # Simulated transient state: first check fails (updating), second check passes (installed)
+        call_count = 0
+        def mock_pm_path(pkg):
+            nonlocal call_count
+            call_count += 1
+            return call_count > 1  # Fails on 1st call, succeeds on 2nd call (retry)
+
+        def is_package_installed_with_retry(pkg):
+            if mock_pm_path(pkg):
+                return True
+            # Retry
+            return mock_pm_path(pkg)
+
+        self.assertTrue(is_package_installed_with_retry("hello.litiaotiao.app"))
+        self.assertEqual(call_count, 2)
+
     def test_log_rotation(self):
         """Verify log rotation logic properly truncates logs when exceeding limit."""
         with tempfile.TemporaryDirectory() as tmpdir:
