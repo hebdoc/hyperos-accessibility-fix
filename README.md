@@ -74,7 +74,7 @@ It's also more minimal this way, having no requirements at all.
 - Force stopping an app via App Manager will not (permanently) remove its accessibility permission anymore.
 
 ## Installation:
-* [Download the module archive here](https://github.com/chkndrp/hyperos-accessibility-fix/releases/latest/download/hyperos-accessibility-fix.zip)
+* [Download the module archive here](https://github.com/hebdoc/hyperos-accessibility-fix/releases/latest/download/hyperos-accessibility-fix.zip)
 * Flash it in magisk app, or using command line
 
 ## Requirements
