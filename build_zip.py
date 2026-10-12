@@ -76,6 +76,11 @@ def build_package():
             print(f"  + Added: {rel_path} (exec={is_exec}, bytes={len(content)})")
 
     print(f"[+] Successfully built {output_name} ({output_path.stat().st_size} bytes)")
+    generic_name = "hyperos-accessibility-fix.zip"
+    generic_path = BASE_DIR / generic_name
+    import shutil
+    shutil.copyfile(output_path, generic_path)
+    print(f"[+] Created generic release package: {generic_name}")
     return output_path
 
 
